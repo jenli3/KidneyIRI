@@ -206,7 +206,7 @@ gsea.bp.z = function(genelist){
   gse = gse %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(gse, NES)
   gse$Pathway.Direction = cut(-1*gse$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
   colnames(gse)[4] = "Count"
-  gse = removecrap(gse)
+  gse = remove.go(gse)
   
   plot.gse = ggplot(gse, aes(x = log.p.adj, y = Description)) + 
     geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
@@ -270,7 +270,7 @@ contrast.mat = makeContrasts(nil.lps = Nil- LPS,
 
 # GLM modelling
 ```{r, warning = FALSE, message = FALSE, echo = FALSE}
-  cutoff1 = 0 # initial run with lfc cutoff zero to see all DEGS
+  cutoff1 = # initial run with lfc cutoff zero to see all DEGS
   glmfit = glmQLFit(dds, design)
   lpst.tol = glmfitdeg(glmfit, cutoff1, "lpstol.tol")
   lpstol.lps = glmfitdeg(glmfit, cutoff1, "lpstol.lps")
@@ -445,7 +445,7 @@ colnames(signature.top30) = c("p.value", "lfc", "lfc*log10(p.value)")
 
 # Volcano, Venn diagrams and heatmaps
 ```{r, warning = FALSE, message = FALSE, echo = FALSE}
-  lfc = 0 # change this, use zero for example
+  lfc =  # change this, use zero for example
   pCutoff = 0.05
 
   # subset
@@ -864,7 +864,7 @@ lcp_sig.all.avg = lcp_sig.all.avg[which(rownames(lcp_sig.all.avg) %in% rownames(
 # T-scores sets to gsea
 ```{r, warning = FALSE, message = FALSE, echo = FALSE}
 
-cutoff = 0 # set zero for example, change for re-analysis
+cutoff = # set zero for example, change for re-analysis
 
 # 1. For genes which Z (same direction) for both tol and lps-tol compared to LPS
   set1 = Z.Scores
