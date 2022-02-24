@@ -1,0 +1,1990 @@
+---
+title: "JLi Spatial Kidney AKI 2022"
+output: nil
+---
+
+# set working directory and load packages
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+gc()
+setwd("~ to your directory") 
+set.seed(42)
+
+versions = readRDS("rds/package.versions.Feb2022.rds")
+packagesload = c("BiocManager", "devtools", "tidyverse", "dplyr", "readxl", "ggpubr", "graphics", 
+                 "MatchIt", "htmlTable", "magrittr", "survminer", "survival", "lattice", "rstatix", 
+                 "viridis", "pROC",  "reshape2", "rcompanion", "DESeq2", "edgeR", "limma", "Glimma", 
+                 "AnnotationDbi", "GOexpress", "Matrix", "org.Hs.eg.db", "org.Mm.eg.db", "ggfortify", 
+                 "RColorBrewer", "mixOmics", "VennDiagram", "monocle", "Rtsne", "gplots", "ggplot2", 
+                 "NMF", "EnhancedVolcano", "calibrate", "pheatmap", "vsn", "Seurat", "SeuratObject", "FSA",
+                 "patchwork", "PCAtools", "rrcov", "pcaExplorer", "usethis", "devtools", "ComICS", "xlsx",
+                 "pathview", "rjson","cowplot", "grid", "readbitmap", "rhdf5", "hdf5r", "data.table", 
+                 "tibble", "clusterProfiler", "ReactomePA", "pathview", "enrichplot", "DOSE", "superheat", 
+                 "stringr", "gridExtra", "Rcpp", "NMF", "kableExtra", "imager",  "spdep",
+                 "pathfindR", "topGO", "biomaRt", "STdeconvolve", "STutility", "SpatialCPie", 
+                 "clustree", "pander", "pagoda2", "harmony", "SingleCellExperiment", "SCINA", 
+                 "shiny", "xtable","S4Vectors", "MASS", "Giotto","Gmisc", "knitr", "table1", 
+                 "singleCellHaystack", "NMF", "gt", "igraph", "GOplot", "ggnewscale", "ggvenn", "GEOquery", 
+                 "forcats", "stringr", "ggrepel", "readr", "tidyr", "XML", "harmony", "SingleR", "scmap",
+                 "celldex", "SingleCellExperiment", "SCINA", "shiny", "ggVennDiagram", "directPA", "Nebulosa")
+
+# Install packages not yet installed, then load
+installed_packages = packagesload %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packagesload[!installed_packages], dependencies = TRUE)}
+invisible(lapply(packagesload, library, character.only = TRUE))
+
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+heatmap.colors = c("lightgray", "mistyrose", "red", "darkred", "black")
+```
+
+# Load custom functions
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+####### CUSTOM FUNCITONS FOR SPATIAL ############
+# Features for each spot and sample
+se_features = function(se) {
+  se_feat = c()
+  se_feat = as.data.frame(levels(as.factor(se@meta.data$sample_id)))
+  colnames(se_feat) = "sample"
+  s1 = 1:length(levels(as.factor(se@meta.data$sample_id)))
+  
+  se_descrip = c()
+  se_descrip1 = c()
+  se_fspot=c()
+  se_fnumi=c()
+  se_fncount=c()
+  se_ffeat=c()
+
+  for (i in s1){
+    se_descrip[[i]] = levels(as.factor(se@meta.data$treatment[
+      se@meta.data$sample_id == (paste0("section_",i,sep=""))]))
+    se_descrip1[[i]] = eval(parse(text = paste0("se_descrip.",i, sep = "")))
+    se_fspot[[i]] = c(nrow(se_descrip1[[i]]@meta.data))
+    se_fnumi[[i]] = c(median(se_descrip1[[i]]@meta.data$nCount_RNA))
+    se_fncount[[i]] = c(median(se_descrip1[[i]]@meta.data$nCount_SCT))
+    se_ffeat[[i]] =c(median(se_descrip1[[i]]@meta.data$nFeature_SCT))
+  }
+  
+  se_feat$treatment = unlist(se_descrip)
+  se_feat$spots=unlist(se_fspot)
+  se_feat$uMI=unlist(se_fnumi)
+  se_feat$nCount=unlist(se_fncount)
+  se_feat$nFeature=unlist(se_ffeat)
+  
+  return(se_feat)
+}
+
+# Number of spots per cluster
+clustspots = function(se) {
+  clust_feat = c()
+  clust_feat = as.data.frame(levels(se@meta.data$seurat_clusters))
+  colnames(clust_feat) = "clusters"
+  
+  spot1 = c()
+  t1 = 1: nrow(clust_feat)
+  for (i in t1){
+    spot1[[i]] = length(which(se@meta.data$seurat_clusters==(i-1))==TRUE) }
+  
+  clust_feat$all = unlist(spot1)
+
+  samp=c()
+  spot2=c()
+  store =c()
+  rename = c()
+  t2 = 1: length(levels(as.factor(se@meta.data$slide)))
+  
+  for (j in t2) {
+    samp[[j]] = levels(as.factor(se@meta.data$slide))[j]
+    for (i in t1){
+    spot2[[i]] = length(which(se@meta.data$seurat_clusters==(i-1) & se@meta.data$slide == samp[[j]])==TRUE)}
+    rename = c(names(clust_feat), samp[[j]])
+    clust_feat = cbind(clust_feat, unlist(spot2))
+    names(clust_feat) = rename}
+
+  return(clust_feat)
+}
+
+# stats for each clust vs rest of tissue
+clustvsrest = function(se, threshold){
+  se.markers = FindAllMarkers(se, only.pos = FALSE, min.pct = 0.05, 
+                              test.use = "wilcox",
+                              logfc.threshold = threshold, 
+                              seed.use = 42)
+
+  se.markers.up = se.markers[which(se.markers$avg_log2FC>0), ]
+  se.markers.down = se.markers[which(se.markers$avg_log2FC<0), ]
+  top20 =se.markers.up %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC)
+  se.up1 = ElbowPlot(se)
+  se.up2 = VizDimLoadings(se, dims = 1:2, reduction = "pca")
+  se.up3 =DimPlot(se, reduction = "tsne", split.by = "treatment", ncol = 3, 
+                 label = TRUE) +theme_pubr(legend = "right") 
+  se.up4 =DimPlot(se, reduction = "umap", split.by = "treatment", ncol = 3, 
+                 label = TRUE) +theme_pubr(legend = "right") 
+  plotup1= ggarrange(se.up1, se.up2, common.legend = TRUE, legend = "right",ncol = 2, nrow = 1)
+  plotup2= ggarrange(se.up3, se.up4, common.legend = TRUE, legend = "right",ncol = 2, nrow = 1)
+
+  # Each cluster vs rest tissue (UP)
+  clust_restup = as.data.frame(levels(se.markers.up$cluster))
+  colnames(clust_restup) = "clust vs rest (up)"
+
+  up = c()
+  top10gene=c()
+  t3=c()
+  t3 = 1: nrow(clust_restup)
+  for (i in t3){
+    up[[i]] = length(which(se.markers.up$cluster==(i-1))==TRUE)
+    top10gene[[i]] = paste0(unlist(top10$gene[which(top10$cluster==(i-1))]), sep="") }
+
+  clust_restup$up = unlist(up)
+  clust_restup$top10 = top10gene
+
+  setClass("clustrestup", 
+   slots = c(clustvsrestup = "data.frame", compstat = "data.frame"), 
+   prototype = list(clustvsrestup = data.frame(), compstat = data.frame()))
+
+  clust.restup = new("clustrestup",
+                  clustvsrestup = se.markers.up,
+                  compstat = clust_restup)
+  
+  # Cluster vs rest tissue (DOWN)
+  clust_restdown = as.data.frame(levels(se.markers.down$cluster))
+  colnames(clust_restdown) = "clust vs rest (down)"
+  down = c()
+  top10gene=c()
+  top10 =c()
+  top10 = se.markers.down %>% group_by(cluster) %>% top_n(n = 10, wt = abs(avg_log2FC))
+  t3=c()
+  t3 = 1: nrow(clust_restdown)
+  for (i in t3){
+    down[[i]] = length(which(se.markers.down$cluster==(i-1))==TRUE)
+    top10gene[[i]] = paste0(unlist(top10$gene[which(top10$cluster==(i-1))]), sep="")
+  }
+
+  clust_restdown$down = unlist(down)
+  clust_restdown$top10 = top10gene
+
+  setClass("clustrestdown", 
+    slots = c(clustvsrestdown = "data.frame", compstat = "data.frame"), 
+    prototype = list(clustvsrestdown = data.frame(), compstat = data.frame()))
+
+  clust.restdown = new("clustrestdown",
+                  clustvsrestdown = se.markers.down,
+                  compstat = clust_restdown)
+  
+  clustvsrestlist = list(se.markers, se.markers.up, se.markers.down, 
+                         plotup1, plotup2, clust.restup, clust.restdown)
+  
+  return(clustvsrestlist)
+}
+
+# Cluster at the full set of resolutions 
+clustpack = function(se) {
+  se = RunPCA(se, assay = "SCT", verbose = FALSE, seed.use = 42)
+  se = FindNeighbors(se, reduction = "pca", dims = 1:10, seed.use = 42) #SNN
+  se = FindClusters(se, verbose = FALSE, resolution = c(0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1, 1.2), seed.use = 42) 
+  se = RunTSNE(se, reduction = "pca", dims =1:10, seed.use = 42)
+  se = RunUMAP(se, reduction = "pca", dims = 1:10, seed.use = 42) # optimise
+  # se = RunUMAP(object = se, dims = 1:40, verbose = FALSE, n.components = 6, 
+  #               reduction = "pca", reduction.name="umap.3d")
+  return(se)
+}
+
+clustresolve = function(se){
+  se.2=c()
+  se.2 = FindClusters(se, resolution = 0, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 0.1, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 0.2, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 0.3, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 0.4, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 0.6, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 0.8, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 1, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 1.2, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 1.4, random.seed = 42)
+  se.2 = FindClusters(se.2, resolution = 1.6, random.seed = 42)
+
+  se.2 = RunUMAP(se.2, reduction = "pca", dims = 1:10)
+
+  s0 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.0") + ggtitle("res = 0")
+  s0.1 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.0.1") + ggtitle("res = 0.1")
+  s0.2 = DimPlot(se.2, reduction = "umap", group.by =  "SCT_snn_res.0.2") + ggtitle("res = 0.2")
+  s0.3 = DimPlot(se.2, reduction = "umap", group.by =  "SCT_snn_res.0.3") + ggtitle("res = 0.3")
+  s0.4 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.0.4") + ggtitle("res = 0.4")
+  s0.6 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.0.6") + ggtitle("res = 0.6")
+  s0.8 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.0.8") + ggtitle("res = 0.8")
+  s1 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.1") + ggtitle("res = 1")
+  s1.2 = DimPlot(se.2, reduction = "umap", group.by =  "SCT_snn_res.1.2") + ggtitle("res = 1.2")
+  s1.4 = DimPlot(se.2, reduction = "umap", group.by =  "SCT_snn_res.1.4") + ggtitle("res = 1.4")
+  s1.6 = DimPlot(se.2, reduction = "umap", group.by = "SCT_snn_res.1.6") + ggtitle("res = 1.6")
+
+# # Multi plot for a selection
+(s0.2 + s0.4+ s0.6)/ (s0.8+s1 + s1.2)
+
+clust_se = c()
+clust_se = clustree(se.2, prefix = "SCT_snn_res.", layout = "tree",
+                     node_colour = "sc3_stability", node_text_colour = "white",
+                     edge_width = 1, node_label_size = 5, edge_arrow = FALSE)
+c1=clust_se
+
+# # highest avg sc3_stabaility score ~ which of the possible clustering resolutions is the most stable 
+stability_se = c()
+stability_se = clust_se$data[,c("SCT_snn_res.", "sc3_stability")]
+stability_se = stability_se[stability_se$SCT_snn_res. %in%
+                               names(which(table(stability_se$SCT_snn_res.) > 1)), ]
+
+stability_se.summary = c()
+stability_se.summary = as.data.frame(stability_se %>%
+                                       group_by(SCT_snn_res.) %>%
+                                       summarize(mean = mean(sc3_stability),
+                                                 median = median(sc3_stability),
+                                                 sd = sd(sc3_stability),
+                                                 min = min(sc3_stability),
+                                                 max = max(sc3_stability),
+                                                 cv = sd(sc3_stability)/mean(sc3_stability)))
+
+rownames(stability_se.summary) = stability_se.summary$SCT_snn_res.
+stability_se.summary$SCT_snn_res. = NULL
+
+# 
+bestres_se_mean = c()
+bestres_se_med = c()
+bestres_se_lowCV = c()
+bestres_se_mean = rownames(stability_se.summary)[which.max(stability_se.summary$mean)]
+bestres_se_med = rownames(stability_se.summary)[which.max(stability_se.summary$median)]
+bestres_se_lowCV = rownames(stability_se.summary)[which.min(stability_se.summary$cv)]
+
+s1= emphasize.strong.rows(which.max(stability_se.summary$mean))
+
+p1= pander(stability_se.summary, split.cells = 5, split.table = Inf,
+       caption = 'Spot per section', label = '10', digits = 2,justify ='center')
+
+# # Optimal resolution is subjective: combine biological info and stats (higher median and lower spread of data - so check median for central tendency for the non-normally distributed data)
+stability_se %>% ggplot(aes(SCT_snn_res., sc3_stability)) + geom_boxplot()+ ggtitle("Batch") +scale_y_continuous(trans='log2')+theme_pubclean()
+
+# and simplistic check to elbow plot
+e1= ElbowPlot(se)
+
+listse2 = list(se.2, p1, e1, s1, c1)
+return(listse2)
+}
+
+# Cluster for particular resolution 
+clustpackres = function(se, resolution) {
+  se = RunPCA(se, assay = "SCT", verbose = FALSE, seed.use = 42)
+  se = FindNeighbors(se, reduction = "pca", dims = 1:10, seed.use = 42) #SNN
+  se = FindClusters(se, verbose = FALSE, resolution = c(resolution), seed.use = 42) 
+  se = RunTSNE(se, reduction = "pca", dims =1:10, seed.use = 42)
+  se = RunUMAP(se, reduction = "pca", dims = 1:10, seed.use = 42) # optimise
+  # se = RunUMAP(object = se, dims = 1:40, verbose = FALSE, n.components = 6, 
+  #               reduction = "pca", reduction.name="umap.3d")
+  return(se)
+}
+
+# pre-process the clust vs rest 
+clustall = function(data1, target1) {
+  clust = c()
+  clust = data1[data1$cluster==target1,]
+  clust$symbol = clust$gene
+  clust$ensembl = gene.conversions$ensembl[match(clust$gene, gene.conversions$symbol)]
+  return(clust)
+}
+
+# Cluster vs rest (DGE - UP)
+clustrestup = function(data1, target1) {
+  clust = c()
+  clust = data1@clustvsrestup[data1@clustvsrestup$cluster==target1,]
+  clust$symbol = clust$gene
+  clust$ensembl = gene.conversions$ensembl[match(clust$gene, gene.conversions$symbol)]
+  clust = clust[order(-clust$avg_log2FC),]
+  clust = clust[!duplicated(clust$gene),]
+  if (nrow(clust) < 500) {
+    entz=c()
+    entz = mapIds(org.Mm.eg.db, keys=clust$ensembl, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+    clust = cbind(clust, ENTREZID = entz)
+    } else {
+      entz=c()
+      entz = bitr(clust$ensembl, fromType = "ENSEMBL", toType ="ENTREZID", OrgDb = org.Mm.eg.db, drop = FALSE)
+      entz = entz[!duplicated(entz$ENSEMBL),]
+      clust$ENTREZID = entz$ENTREZID
+      }
+  return(clust)
+}
+
+# Cluster vs rest (DGE - DOWN)
+clustrestdown = function(data1, target1) {
+  clust = c()
+  clust = data1@clustvsrestdown[data1@clustvsrestdown$cluster==target1,]
+  clust$symbol = clust$gene
+  clust$ensembl = gene.conversions$ensembl[match(clust$gene, gene.conversions$symbol)]
+  # clust$rank = clust$avg_log2FC * (-log10(clust$p_val_adj))
+  #   clust$rank = ifelse(clust$rank == "Inf", 10^6, clust$rank)
+  clust = clust[order(-clust$avg_log2FC),]
+  clust = clust[!duplicated(clust$gene),]
+  if (nrow(clust) < 500) {
+    entz=c()
+    entz = mapIds(org.Mm.eg.db, keys=clust$ensembl, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+    clust = cbind(clust, ENTREZID = entz)
+    } else {
+      entz=c()
+      entz = bitr(clust$ensembl, fromType = "ENSEMBL", toType ="ENTREZID", OrgDb = org.Mm.eg.db, drop = FALSE)
+      entz = entz[!duplicated(entz$ENSEMBL),]
+      clust$ENTREZID = entz$ENTREZID
+      }
+  return(clust)
+}
+
+
+# Pairwise clusters
+clustpwup = function(data1, target1, target2) {
+  clust.pair = c()
+  clust.pair = slot(data1, paste0("comp", target1, "vs", target2, sep  = ""))
+  clust.pair = clust.pair[(clust.pair$avg_log2FC > 0),] # up (change to < 0 if down)
+  clust.pair$gene = rownames(clust.pair)
+  clust.pair$symbol = clust.pair$gene
+  clust.pair$ensembl =  gene.conversions$ensembl[match(clust.pair$gene, gene.conversions$symbol)]
+  clust.pair = clust.pair[order(-clust.pair$avg_log2FC),]
+  clust.pair = clust.pair[!duplicated(clust.pair$gene),]
+if (nrow(clust.pair) < 600) {
+    entz=c()
+    entz = mapIds(org.Mm.eg.db, keys=clust.pair$ensembl, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+    clust.pair = cbind(clust.pair, ENTREZID = entz)
+    } else {
+      entz=c()
+      entz = bitr(clust.pair$ensembl, fromType = "ENSEMBL", toType ="ENTREZID", OrgDb = org.Mm.eg.db, drop = FALSE)
+      entz = entz[!duplicated(entz$ENSEMBL),]
+      clust.pair$ENTREZID = entz$ENTREZID}
+      return(clust.pair)
+}
+
+
+clustpwall = function(data1, target1, target2) {
+  clust.pair = c()
+  clust.pair = slot(data1, paste0("comp", target1, "vs", target2, sep  = ""))
+  clust.pair$gene = rownames(clust.pair)
+  clust.pair$symbol = clust.pair$gene
+  clust.pair$ensembl =  gene.conversions$ensembl[match(clust.pair$gene, gene.conversions$symbol)]
+  clust.pair = clust.pair[order(-clust.pair$avg_log2FC),]
+  clust.pair = clust.pair[!duplicated(clust.pair$gene),]
+if (nrow(clust.pair) < 600) {
+    entz=c()
+    entz = mapIds(org.Mm.eg.db, keys=clust.pair$ensembl, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+    clust.pair = cbind(clust.pair, ENTREZID = entz)
+    } else {
+      entz=c()
+      entz = bitr(clust.pair$ensembl, fromType = "ENSEMBL", toType ="ENTREZID", OrgDb = org.Mm.eg.db, drop = FALSE)
+      entz = entz[!duplicated(entz$ENSEMBL),]
+      clust.pair$ENTREZID = entz$ENTREZID}
+      return(clust.pair)
+}
+
+clustpprocess = function(data1) {
+  clust.pair = c()
+  clust.pair = data1
+  clust.pair$gene = rownames(clust.pair)
+  clust.pair$symbol = clust.pair$gene
+  clust.pair$ensembl =  gene.conversions$ensembl[match(clust.pair$gene,
+                                                        gene.conversions$symbol)]
+  clust.pair$diffexpressed = "NO"
+  clust.pair$diffexpressed[clust.pair$avg_log2FC > 0 & clust.pair$p_val_adj < 0.05] = "UP"
+  clust.pair$diffexpressed[clust.pair$avg_log2FC < 0 & clust.pair$p_val_adj < 0.05] = "DOWN"
+  clust.pair$dlabel = NA
+  clust.pair$dlabel[clust.pair$diffexpressed != "NO"] =
+    clust.pair$symbol[clust.pair$diffexpressed != "NO"]
+ return(clust.pair)
+}
+
+# Calculate Z-score
+cal_z_score = function(x){(x - mean(x)) / sd(x)}
+
+# remove go terms not relevant for us
+remove.go = function(data){
+    remove1 = c(data$Description[grep("ameboidal", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("glial", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("spine", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("rhythmic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("heart", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("hair", data$Description, ignore.case = TRUE)],
+            data$Description[grep("cardiac", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("aorta", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("valve", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("covid", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("embryo", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("biotic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("neuromuscular", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("spramolecular", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("clathrin", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("bone", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("endocondral", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("ER", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("melanocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("collagen", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("tube", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("coronary", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("vascular", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("visual", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("disc", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("synaptic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("tree", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("somatodendritic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("detection", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("sensory", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("virus", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("neuron", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("viral", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("gonad", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("biological", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("organ", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("male", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("female", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("syncitium", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("ossification", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("reproductive", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("symbiotic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("alcohol", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("actin", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("synapse", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("muscle", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("gliogenesis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("neuron", data$Description, ignore.case = TRUE)],
+            data$Description[grep("neural", data$Description, ignore.case = TRUE)],
+            data$Description[grep("striated", data$Description, ignore.case = TRUE)],
+            data$Description[grep("artery", data$Description, ignore.case = TRUE)],
+            data$Description[grep("biotic", data$Description, ignore.case = TRUE)],
+            data$Description[grep("cartilage", data$Description, ignore.case = TRUE)],
+            data$Description[grep("vessel", data$Description, ignore.case = TRUE)],
+            data$Description[grep("organic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("lithium", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("progesterone", data$Description, ignore.case = TRUE)],
+            data$Description[grep("spindle", data$Description, ignore.case = TRUE)],
+            data$Description[grep("multicellular", data$Description, ignore.case = TRUE)],
+            data$Description[grep("myoblast", data$Description, ignore.case = TRUE)],
+            data$Description[grep("skeletal", data$Description, ignore.case = TRUE)],
+            data$Description[grep("wound", data$Description, ignore.case = TRUE)],
+            data$Description[grep("parkinson", data$Description, ignore.case = TRUE)],
+            data$Description[grep("cytoskeleton", data$Description, ignore.case = TRUE)])
+
+  data = data[!data$Description %in% remove1,]
+  return(data)
+  }
+
+pickimmune = function(data){
+  immune1 = c(data$Description[grep("immune", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("lymphocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("leukocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("B cell", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("T cell", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("inflammatory", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("monocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("macrophage", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("dendritic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("myeloid", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("apc", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("nk", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("neutrophil", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("innate", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("adaptive", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("platelet", data$Description, ignore.case = TRUE)],
+            data$Description[grep("complement", data$Description, ignore.case = TRUE)],
+            data$Description[grep("toll", data$Description, ignore.case = TRUE)],
+            data$Description[grep("mhc", data$Description, ignore.case = TRUE)],
+            data$Description[grep("antigen", data$Description, ignore.case = TRUE)],
+            data$Description[grep("chemotaxis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("migration", data$Description, ignore.case = TRUE)],
+            data$Description[grep("death", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("apoptosis", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("apoptotic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("immune", data$Description, ignore.case = TRUE)],
+            data$Description[grep("pyroptosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("necroptosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("necrosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("autophagy", data$Description, ignore.case = TRUE)],
+            data$Description[grep("ferroptosis", data$Description, ignore.case = TRUE)])
+
+  data = data[data$Description %in% immune1,]
+  return(data)
+}
+
+pickrelevant = function(data){
+  immune1 = c(data$Description[grep("immune", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("lymphocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("leukocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("lymphoid", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("B cell", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("T cell", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("inflammatory", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("monocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("macrophage", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("dendritic", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("myeloid", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("apc", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("nk", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("neutrophil", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("innate", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("adaptive", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("platelet", data$Description, ignore.case = TRUE)],
+            data$Description[grep("complement", data$Description, ignore.case = TRUE)],
+            data$Description[grep("toll", data$Description, ignore.case = TRUE)],
+            data$Description[grep("mhc", data$Description, ignore.case = TRUE)],
+            data$Description[grep("antigen", data$Description, ignore.case = TRUE)],
+            data$Description[grep("chemotaxis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("caspase", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("NLRP3", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("inflammasome", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("aim2", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("antigen", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("repair", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("migration", data$Description, ignore.case = TRUE)],
+            data$Description[grep("death", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("apoptosis", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("apoptotitc", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("immune", data$Description, ignore.case = TRUE)],
+            data$Description[grep("pyroptosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("necroptosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("necrosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("autophagy", data$Description, ignore.case = TRUE)],
+            data$Description[grep("mitochondria", data$Description, ignore.case = TRUE)],
+            data$Description[grep("mitochondrial", data$Description, ignore.case = TRUE)],
+            data$Description[grep("oxidative", data$Description, ignore.case = TRUE)],
+            data$Description[grep("oxidation", data$Description, ignore.case = TRUE)],
+            data$Description[grep("fatty acid", data$Description, ignore.case = TRUE)],
+            data$Description[grep("lipid", data$Description, ignore.case = TRUE)],
+            data$Description[grep("peroxisomes", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("leukocyte", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("glutathione", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("ferroptosis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("cycle", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("adhesion", data$Description, ignore.case = TRUE)],  
+            data$Description[grep("polarity", data$Description, ignore.case = TRUE)],  
+            data$Description[grep("mitotic", data$Description, ignore.case = TRUE)],  
+            data$Description[grep("epithelial", data$Description, ignore.case = TRUE)],
+            data$Description[grep("fibroblast", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("exocytosis", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("arachadonic", data$Description, ignore.case = TRUE)],
+            data$Description[grep("electron", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("locomotion", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("respiration", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("angiogenesis", data$Description, ignore.case = TRUE)],
+            data$Description[grep("reduction", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("oxygen", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("plasma membrane", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("NADH", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("dehydrogenase", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("respirasome", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("respiratory", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("oxidoreductase", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("iron", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("heme", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("NAD", data$Description, ignore.case = TRUE)],
+            data$Description[grep("NF", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("kappa", data$Description, ignore.case = TRUE)], 
+            data$Description[grep("phosphatidylinositol", data$Description, ignore.case = TRUE)])
+  data = data[data$Description %in% immune1,]
+  return(data)
+}
+
+# pre-process for enrichment
+gene0symbol = function(data1) {
+  gene0 = c()
+  gene0 = data1$avg_log2FC # the Log2FC
+  names(gene0) = data1$symbol # genes
+  gene0 = sort(gene0, decreasing = TRUE) # sort decreasing order
+  gene0 = gene0[!duplicated(names(gene0))]
+  return(gene0)
+}
+
+gene0ensembl = function(data1) {
+  gene0 = c()
+  gene0 = data1$avg_log2FC # the Log2FC
+  names(gene0) = data1$ensembl # genes
+  gene0 = sort(gene0, decreasing = TRUE) # sort decreasing order
+  gene0 = gene0[!duplicated(names(gene0))]
+  return(gene0)
+}
+
+gene0entrezid = function(data1) {
+  gene0 = c()
+  gene0 = data1$avg_log2FC # the Log2FC
+  names(gene0) = data1$ENTREZID # genes
+  gene0 = sort(gene0, decreasing = TRUE) # sort decreasing order
+  gene0 = gene0[!duplicated(names(gene0))]
+  return(gene0)
+}
+
+
+# Over representation analysis with GO (clusterprofiler) - not used
+egosummary = function (gene0, pcutoff, qcutoff, adjmethod, ont) {
+# Over representation enrichment analysis
+# ontology cytosolic component
+  ego.cc = c()
+  ego.cc = enrichGO(gene     = names(gene0),
+                OrgDb         = org.Mm.eg.db,
+                keyType       = 'ENTREZID',
+                ont           = ont,
+                pAdjustMethod = adjmethod,
+                pvalueCutoff  = pcutoff,
+                qvalueCutoff  = qcutoff, 
+                readable      = TRUE)
+  egocc = c()
+  egocc = filter(ego.cc, p.adjust < 0.05, qvalue < 0.05)
+  egocc = mutate(egocc, geneRatio = parse_ratio(GeneRatio)) %>% arrange(desc(geneRatio))
+  egocc = mutate(egocc, richFactor = Count / as.numeric(sub("/\\d+", "", BgRatio)))
+  egocc = mutate(egocc, FoldEnrichment = parse_ratio(GeneRatio) / parse_ratio(BgRatio))
+
+  cc1 = barplot(egocc, showCategory=20, title ="cytosolic component")
+  cc2 = dotplot(egocc, showCategory=20, title ="cytosolic component")
+  cc3 = upsetplot(egocc)
+  cc4 = heatplot(egocc)
+  cc5 = goplot(egocc)
+  cc6 = ggplot(egocc, showCategory = 20, aes(FoldEnrichment, fct_reorder(Description, FoldEnrichment))) + 
+    geom_point(aes(color=p.adjust, size = Count)) +
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) +
+    scale_size_continuous(range=c(2, 10)) +theme_minimal() + xlab("FoldEnrichment") +
+    ylab(NULL) + ggtitle(paste0("Enriched GO: ", ont))
+  
+  listcc = list(cc1, cc2, cc3, cc4, cc5, cc6)
+  return(listcc)
+}
+
+
+ekeggsummary = function (gene0, pcutoff, qcutoff, adjmethod) {
+  ekegg.mmu = c()
+  ekegg.mmu = enrichKEGG(gene  = names(gene0),
+                    organism     = 'mmu',
+                    pAdjustMethod = adjmethod,
+                    pvalueCutoff = pcutoff,
+                    qvalueCutoff = qcutoff)
+  ekegg = c()
+  ekegg = filter(ekegg.mmu, p.adjust < 0.05, qvalue < 0.05)
+  ekegg = mutate(ekegg, geneRatio = parse_ratio(GeneRatio)) %>% arrange(desc(geneRatio))
+  ekegg = mutate(ekegg, richFactor = Count / as.numeric(sub("/\\d+", "", BgRatio)))
+  ekegg = mutate(ekegg, FoldEnrichment = parse_ratio(GeneRatio) / parse_ratio(BgRatio))
+  ek1 = barplot(ekegg, showCategory=20,  title ="KEGG")
+  ek2 = dotplot(ekegg, showCategory=20,  title ="KEGG")
+  ek3 = upsetplot(ekegg)
+  ek4 = heatplot(ekegg)
+  ek5 = ggplot(ekegg, showCategory = 20, aes(geneRatio, fct_reorder(Description, geneRatio))) +
+    geom_point(aes(color=p.adjust, size = Count))+ #geom_segment(aes(xend=0, yend = Description)) +
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) +
+    scale_size_continuous(range=c(2, 10)) +theme_minimal() +
+    xlab("GeneRatio") +ylab(NULL) + ggtitle("Enriched KEGG - GR")
+  ek6 = ggplot(ekegg, showCategory = 20, aes(richFactor, fct_reorder(Description, richFactor))) +
+    geom_point(aes(color=p.adjust, size = Count)) +
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) +
+    scale_size_continuous(range=c(2, 10)) + theme_minimal() + xlab("RichFactor") +
+    ylab(NULL) + ggtitle("Enriched KEGG - RF")
+  ek7 = ggplot(ekegg, showCategory = 20, aes(FoldEnrichment, fct_reorder(Description, FoldEnrichment))) +
+    geom_point(aes(color=p.adjust, size = Count)) +
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) +
+    scale_size_continuous(range=c(2, 10)) +theme_minimal() + xlab("FoldEnrichment") +
+    ylab(NULL) + ggtitle("Enriched KEGG - FE")
+  listkegg = list(ek1, ek2, ek3, ek4, ek5, ek6, ek7)
+  enrichlist = list("egoKEGG" = ekegg,"ekeggplot" = listkegg)
+  return(enrichlist)
+}
+
+# GSEA with GO (clusterprofiler)
+ggosummarybp = function (gene0, pcutoff, adjmethod, ont){
+  g.go.bp = c()
+  g.go.bp = gseGO(geneList = gene0, 
+             ont =ont, # options: All, BP (biol process), MF (mol func), CC (cytosolic comp)
+             keyType = "SYMBOL", 
+             OrgDb = org.Mm.eg.db, 
+             nPerm = 10000, # permutations, set 10,000 when correct
+             minGSSize = 10, # min number genes in set
+             maxGSSize = 1000, # max genes in a set
+             pvalueCutoff = pcutoff,
+             verbose = FALSE, 
+             seed = 42,
+             pAdjustMethod = adjmethod)
+  ggo.bp = filter(g.go.bp, p.adjust < 0.05, qvalues < 0.05)
+  x2.bp = pairwise_termsim(ggo.bp)
+  ggo.bp1 = as.data.frame(ggo.bp)
+  ggo.bp1 = ggo.bp1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(ggo.bp1, NES)
+  ggo.bp1$Pathway.Direction = cut(-1*ggo.bp1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  colnames(ggo.bp1)[4] = "Count"
+  ggo.bp1 = remove.go(ggo.bp1)
+  pg1.bp = dotplot(ggo.bp, showCategory = 20, title = "GSEA-GO", split = ".sign") + facet_grid(.~.sign)
+  pg2.bp = gseaplot(ggo.bp, by = "all", geneSetID = 1)
+  pg3.bp = ridgeplot(ggo.bp) + labs(x = "enrichment distribution")
+  pg4.bp = emapplot(x2.bp)
+  pg5.bp = ggplot(ggo.bp1, aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + 
+    ggtitle("GSEA-GO:BP") + 
+    facet_grid(~Pathway.Direction)
+  pg6.bp = cnetplot(x2.bp, categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = gene0, 
+         node_label = "all", cex_label_category = 1.3)
+  listgsego.bp = list(pg1.bp, pg2.bp, pg3.bp, pg4.bp, pg5.bp, pg6.bp)
+  gselist = list("gsego.bp" = ggo.bp, "gsegoplot.bp" = listgsego.bp)
+  return(gselist)
+}
+
+# GSEA with KEGG (clusterprofiler) not used
+gkeggsummary = function (gene0, pcutoff, adjmethod){
+  pcutoff = 0.05
+  adjmethod = "BH"
+  g.kegg = c()
+  g.kegg = gseKEGG(geneList  = gene0,
+                 organism = "mmu",
+                 keyType = "kegg",
+                 minGSSize = 5,
+                 maxGSSize = 1000,
+                 pvalueCutoff = pcutoff,
+                 pAdjustMethod = adjmethod,
+                 verbose      = FALSE)
+  gkegg = c()
+  x2 = c()
+  gkegg = filter(g.kegg, p.adjust < 0.05, qvalues < 0.05)
+  x2 = pairwise_termsim(gkegg)
+  pk1 = dotplot(gkegg, showCategory = 20, title = "GSEA-kegg", split = ".sign") + facet_grid(.~.sign)
+  pk2 = gseaplot(gkegg, by = "all", title = gkegg$Description[1], geneSetID = 1)
+  pk3 = ridgeplot(gkegg, showCategory = 20) + labs(x = "enrichment distribution")
+  listgsego = list(pk1, pk2, pk3)
+  gselist = list("gsekegg" = gkegg, "gsekeggplot" = listgsego)
+  return(gselist)
+}
+
+#### PathfindR pathway analysis - not used
+pathsummary = function (clustxvsy){
+  clustxvsypath = clustxvsy[,c("symbol", "avg_log2FC", "p_val_adj")]
+  pathrun = c()
+  pathrun = run_pathfindR(clustxvsypath,
+                        enrichment_threshold = 0.01,
+                        gene_sets = "Custom",
+                        custom_genes = mmu_kegg_genes,
+                        custom_descriptions = mmu_kegg_descriptions,
+                        output_dir = "pathfind")
+  tablepath = knitr::kable(head(pathrun, 20))
+  chartpath = enrichment_chart(result_df = pathrun, top_terms = 20)
+  genepath = term_gene_graph(result_df = pathrun, use_description = TRUE)  
+  heatpath = term_gene_heatmap(result_df = pathrun, genes_df = clustxvsypath)
+  upsetpath = UpSet_plot(result_df = pathrun, genes_df = clustxvsypath)
+  plotpath = list(tablepath, chartpath, genepath, heatpath, upsetpath)
+  listpath = list("pathway" = pathrun, "pathway plots" = plotpath)
+  return(listpath)}
+  
+# summary for each pairwise cluster enrichment analysis #####
+summary.clustpw = function (i) {
+  if (i == 0) {
+    clust = se.clust.vs.0
+  } else if (i == 1) {
+    clust = se.clust.vs.1
+  } else if (i == 2) {
+    clust = se.clust.vs.1
+  } else if (i == 3) {
+    clust = se.clust.vs.1
+  } else if (i == 4) {
+    clust = se.clust.vs.1
+  } else if (i == 5) {
+    clust = se.clust.vs.1
+  } else if (i == 6) {
+    clust = se.clust.vs.1
+  } else if (i == 7) {
+    clust = se.clust.vs.1
+  } else if (i == 8) {
+    clust = se.clust.vs.1
+  } else if (i == 9) {
+    clust = se.clust.vs.1
+  } else if (i == 10) {
+    clust = se.clust.vs.1
+  } 
+
+  no.clusters = c()
+  no.clusters=as.numeric(levels(se@meta.data$seurat_clusters))
+  t1 = c()
+  t1 = (i+1):no.clusters[length(no.clusters)]
+  cxor.temp = c()
+  gxor.temp = c()
+  cego = c()
+  cekegg = c()
+  cxgse.temp = c()
+  gxgse = c()
+  cggo = c()
+  cgkegg = c()
+  cpfr = c()
+  
+  for (j in t1) {
+  cxor.temp[[j]] = clustpwup(clust, i, j)
+  gxor.temp[[j]] = gene0entrezid(cxor.temp[[j]])
+  cego[[k]] = egosummary(gxor.temp[[j]], 0.05, 0.05, "BH")
+  cekegg[[j]] = ekeggsummary(gxor.temp[[j]], 0.05, 0.05, "BH")
+  cxgse.temp[[j]] = clustpwall(clust, i, j)
+  gxgse[[j]] = gene0entrezid(cxgse.temp[[j]])
+  cggo[[j]] = ggosummary(gxgse[[j]], 0.05, "BH")
+  cgkegg[[j]] = gkeggsummary(gxgse[[j]], 0.05, "BH")
+  cpfr[[j]] = pathsummary(cxgse.temp[[j]])
+  }
+  matrices = list(cego, cekegg, cpfr)
+  return(matrices)
+}
+
+# modify vln plot for seurat markers
+modify_vlnplot<- function(obj, feature, pt.size = 0, 
+                          plot.margin = unit(c(-0.75, 0, -0.75, 0), "cm"),
+                          ...) {
+  p<- VlnPlot(obj, features = feature, pt.size = pt.size, ... )  + 
+    xlab("") + ylab(feature) + ggtitle("") + 
+    theme(legend.position = "none", 
+          axis.text.x = element_blank(), 
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = rel(1), angle = 0), 
+          axis.text.y = element_text(size = rel(1)), 
+          plot.margin = plot.margin ) 
+  return(p)
+}
+
+extract_max<- function(p){
+  ymax<- max(ggplot_build(p)$layout$panel_scales_y[[1]]$range$range)
+  return(ceiling(ymax))
+}
+
+StackedVlnPlot<- function(obj, features,
+                          pt.size = 0, 
+                          plot.margin = unit(c(-0.75, 0, -0.75, 0), "cm"),
+                          ...) {
+  
+  plot_list<- purrr::map(features, function(x) modify_vlnplot(obj = obj,feature = x, ...))
+  plot_list[[length(plot_list)]]<- plot_list[[length(plot_list)]] +
+    theme(axis.text.x=element_text(angle = 45, hjust = 1, vjust = 1), 
+          axis.ticks.x = element_line())
+  ymaxs<- purrr::map_dbl(plot_list, extract_max)
+  plot_list<- purrr::map2(plot_list, ymaxs, function(x,y) x + 
+                            scale_y_continuous(breaks = c(y)) + 
+                            expand_limits(y = y))
+  
+  p<- patchwork::wrap_plots(plotlist = plot_list, ncol = 1)
+  return(p)
+}
+
+# Display genes of interest
+dispgoi = function(se, ftx, splitby) {
+  fdisp = c()
+  for (i in 1:length(ftx)) {
+    if (splitby == "treatment") {
+    fdisp[[i]] = FeaturePlot(se, features = ftx[[i]], reduction = "umap", order = TRUE, 
+                              cols = heatmap.colors, split.by = "treatment", ncol = 3)
+    } else if (splitby == "slide") {
+    fdisp[[i]] = FeaturePlot(se, features = ftx[[i]], reduction = "umap", order = TRUE, 
+                              cols = heatmap.colors, split.by = "slide", ncol = 3)
+    } else {
+    fdisp[[i]] = FeatureOverlay(se, features = ftx[[i]], sampleids = 1:6, 
+                                 cols = c("lightgray", "mistyrose", "red", "darkred", "black"), 
+                                 pt.size = 1.5,  pt.alpha = 0.5, ncol = 3)}}
+  return(fdisp)
+}
+
+# compare a cluster across treatment group
+gsea.lpstol.v.rest.03 = function(se, cluster,threshold){
+  id1 = "LPSTol"
+  id2 = "TolDC"
+  id3 = "PBS"
+  check = c()
+  check = SubsetSTData(se, expression = SCT_snn_res.0.3 == cluster)
+  Idents(check) = 'SCT_snn_res.0.3'
+  check.pbs = SubsetSTData(check, expression = treatment == "PBS")
+  check.ltoldc = SubsetSTData(check, expression = treatment == "LPSTol")
+  check.toldc = SubsetSTData(check, expression = treatment == "TolDC")
+  check.m = MergeSTData(check.pbs,c(check.toldc,  check.ltoldc))
+
+  # Cluster  FindMarkers id1 (LPS-Tol) vs id2 (TolDC)
+  check.markers.id1v2 = c()
+  check.markers.id1v2 = FindMarkers(check.m, ident.1 = id1, ident.2 = id2, 
+                                    group.by = 'treatment', 
+                                    subset.ident = as.character(cluster), 
+                                    recorrect_umi = FALSE,
+                                    logfc.threshold = threshold, 
+                                    min.pct = 0.05)
+  check.markers.id1v2 = clustpprocess(check.markers.id1v2)
+  
+  volcanoid1v2 = ggplot(data=check.markers.id1v2, 
+                        aes(x=avg_log2FC, y=-log10(p_val_adj), 
+                            col=diffexpressed, label=dlabel)) +
+    geom_point() + theme_minimal() + geom_text_repel() +
+    scale_color_manual(values=c("blue", "black", "red")) +
+    geom_vline(xintercept=c(-0.5, 0.5), col="pink") +
+    geom_hline(yintercept=-log10(0.05), col="pink") + 
+    ggtitle("LPSTolDC vs TolDC")
+  
+  # GSE analysis
+  c0v1ggo.id1v2bp = c()
+  c0v1ggo.id1v2bp = ggosummarybp(gene0symbol(check.markers.id1v2), 0.05, "BH", "all")
+  test1 = data.frame(c0v1ggo.id1v2bp$gsego.bp)
+  test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+  test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1 = remove.go(test1)
+  test1.a = pickimmune(test1)
+
+  # Cluster FindMarkers id1 (LPS-Tol) vs id3 (PBS)
+  check.markers.id1v3 = c()
+  check.markers.id1v3 = FindMarkers(check.m, ident.1 = id1, ident.2 = id3, 
+                                    group.by = 'treatment', 
+                                    subset.ident = as.character(cluster), 
+                                    recorrect_umi = FALSE,
+                                    logfc.threshold = threshold, 
+                                    min.pct = 0.05)
+  check.markers.id1v3 = clustpprocess(check.markers.id1v3)
+  
+  volcanoid1v3 = c()
+  volcanoid1v3 = ggplot(data=check.markers.id1v3, 
+                        aes(x=avg_log2FC, y=-log10(p_val_adj), 
+                            col=diffexpressed, label=dlabel)) +
+    geom_point() + theme_minimal() + geom_text_repel() +
+    scale_color_manual(values=c("blue", "black", "red")) +
+    geom_vline(xintercept=c(-0.5, 0.5), col="pink") +
+    geom_hline(yintercept=-log10(0.05), col="pink") + 
+    ggtitle("LPSTolDC vs PBS")
+
+  # GSE analysis
+  c0v1ggo.id1v3bp = ggosummarybp(gene0symbol(check.markers.id1v3), 0.05, "BH", "all")
+  
+  test2 = data.frame(c0v1ggo.id1v3bp$gsego.bp)
+  test2 = test2 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test2, NES)
+  test2$Pathway.Direction = cut(-1*test2$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test2 = remove.go(test2)
+  test2.a = pickimmune(test2)
+
+  # Find common for Cluster LPSTol vs Tol/PBS
+  common = test1[test1$Description %in% test2$Description,]
+  common.keep = common[common$Pathway.Direction == test2$Pathway.Direction,]
+  common.keep = common.keep[!is.na(common.keep$Pathway.Direction),]
+  remove = common.keep$Description[grep("anatomical", common.keep$Description, ignore.case = TRUE)]
+  common.keep = common.keep[!(common.keep$Description %in% remove),]
+  
+  list1 = list(test1, test1.a, test2, test2.a, common.keep)
+  return(list1)}
+
+custom.gsea = function(data){
+  test1 = data.frame(data)
+  test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+  test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1 = remove.go(test1)
+  return(test1)
+}
+```
+
+# load dataobject (se.raw) and pre-process/filter/normalise
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+se = readRDS("...file to se.raw.rds")
+
+# FILTER + NORMALISE  data - nfeat > 200, ncount > 100, %mito < 30
+se = SubsetSTData(se, expression = nFeature_RNA > 200
+                   & nCount_RNA > 100 & percent.mito < 30)
+
+  mt.genes = grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+  se$percent.mito = Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/
+                        Matrix::colSums(se@assays$RNA@counts)*100
+  
+  rp.genes = grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE)
+  se$percent.ribo = (Matrix::colSums(se@assays$RNA@counts[rp.genes, ])/
+                        Matrix::colSums(se@assays$RNA@counts))*100
+
+# Normalisation
+se = SCTransform(se,  vars.to.regress = c("slide", "percent.mito"))
+
+  # Get raw count data 
+  umi_data = c()
+  umi_data = GetAssayData(object = se, slot = "counts", assay = "RNA")
+  
+  # Calculate gene attributes
+  gene_attr = c()
+  gene_attr = data.frame(mean = rowMeans(umi_data),
+                          detection_rate = rowMeans(umi_data > 0),
+                          var = apply(umi_data, 1, var), 
+                          row.names = rownames(umi_data)) %>%
+    mutate(log_mean = log10(mean), log_var = log10(var))
+  
+  # Obtain spot attributes from Seurat meta.data slot
+  spot_attr = c()
+  spot_attr = se[[c("nFeature_RNA", "nCount_RNA")]]
+
+  # Loading images for STUtility
+  se = LoadImages(se, time.resolve = FALSE, verbose = TRUE)
+  se = MaskImages(object = se)
+  ImagePlot(se, method = "raster", type = "masked", ncol = 1)
+
+# Basic plots/QC visualisations
+  pfeat = ggplot() + geom_histogram(data = se[[]], aes(
+    nFeature_RNA, colour = factor(slide)), alpha = 0.1, bins = 50) +
+    ggtitle("Unique genes per spot") + theme_pubr(legend = "right") + 
+    geom_vline (xintercept = 200, linetype = "dotdash")
+  
+  pcount = ggplot() +geom_histogram(data = se[[]], aes(
+    nCount_RNA, colour = factor(slide)),  fill = "red", alpha = 0.1, bins = 50) + 
+    ggtitle("Total counts per spots") + theme_pubr(legend = "right") + 
+    geom_vline (xintercept = 100, linetype = "dotdash")
+  
+  pmito2 = ggplot() + geom_histogram(data = se[[]], aes(
+    percent.mito, colour = factor(slide)), alpha = 0.1, bins = 50) + 
+    ggtitle("Mitochondrial genes" ) + theme_pubr(legend = "right") + 
+    geom_vline (xintercept = 30, linetype = "dotdash")
+  
+  pribo2 = ggplot() + geom_histogram(data = se[[]], aes(
+    percent.ribo, colour = factor(slide)), alpha = 0.1, bins = 50) + 
+    ggtitle("Ribosomal geness") + theme_pubr(legend = "right")
+  
+  pfeatcount = VlnPlot(se, features = c("nFeature_RNA", "nCount_RNA"), 
+                       group.by = "slide", log = FALSE, ncol=2, pt.size = 0.01)
+  
+  pmitoribo = VlnPlot(se, features = c("percent.mito", "percent.ribo"), 
+                      group.by = "slide", log = FALSE,  ncol = 2, pt.size = 0.01) + ylim(0,30)
+
+# Plots post filter
+pmitosub = ST.FeaturePlot(se, features = "percent.mito", 
+                          cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+                          pt.size = 1.3, ncol = 3) + theme_pubr(legend = "right")
+
+pribosub = ST.FeaturePlot(se, features = "percent.ribo", 
+                          cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+                          pt.size = 1.3, ncol = 3) + theme_pubr(legend = "right")
+
+pfeatcountsub = VlnPlot(se, features = c("nFeature_RNA", "nCount_RNA"), 
+                        group.by = "slide", log = FALSE, ncol = 3, pt.size = 0.01)
+
+pmitoribosub = VlnPlot(se, features = c("percent.mito", "percent.ribo"), 
+                       group.by = "slide", log = FALSE, ncol = 3, pt.size = 0.01)
+
+# Post filtering
+(pfeat+pcount)/(pmito2+pribo2)
+pfeatcount
+pmitoribo
+pmitosub/pribosub
+pfeatcountsub
+pmitoribosub
+
+ST.FeaturePlot(se, features = "nFeature_RNA", 
+               cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+               pt.size = 1.3, ncol = 1) + theme_cleantable()
+ST.FeaturePlot(se, features = "percent.mito", 
+               cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+               pt.size = 1.3, ncol = 1) + theme_cleantable()
+
+# Descriptive stats for paper re: coverage and QC after above filtering etc
+levels(as.factor(se@meta.data$sample_id))
+se_descrip.1 = SubsetSTData(se, expression = sample_id %in% "section_1")
+se_descrip.2 = SubsetSTData(se, expression = sample_id %in% "section_2")
+se_descrip.3 = SubsetSTData(se, expression = sample_id %in% "section_3")
+se_descrip.4 = SubsetSTData(se, expression = sample_id %in% "section_4")
+se_descrip.5 = SubsetSTData(se, expression = sample_id %in% "section_5")
+se_descrip.6 = SubsetSTData(se, expression = sample_id %in% "section_6")
+se_feat = se_features(se)
+```
+
+# SPATIAL CORRELATION, dimensionality reduction & clustering
+```{r,  warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+# Spatial Auto-Correlation
+spatgenes = CorSpatialGenes(se)
+se = clustpack(se) #: c(0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1, 1.2)
+se.2 = clustresolve(se) # look at metrics to decide --> ie. res = 0.3
+
+# At optimal resolution for initial run - cluster and dimension reduction
+se = clustpackres(se, 0.3)
+gc()
+
+  plotpca = DimPlot(se, reduction = "pca" , split.by = "slide1", ncol = 3, 
+                     shuffle=TRUE) +theme_pubr(legend = "right")
+  plotumap = DimPlot(se, reduction = "umap", ncol = 3, 
+                      label = TRUE) +theme_pubr(legend = "right")
+  plottsne = DimPlot(se, reduction = "tsne",ncol = 3, 
+                      label = TRUE) +theme_pubr(legend = "right")
+  plotslideseurat = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1, 
+                                    ncol = 2, legend.align = "bottom", value.scale = "all",
+                                    dark.theme = F, label=TRUE, cols = col_vector) + theme_pubr(legend = "right")
+  plotslideumap2 = ST.DimPlot(object = se, dims = 1:3, label = TRUE,reduction = "umap.3d", 
+                               blend = T, pt.size = 1.8)
+  plotftx = VlnPlot(se,features=c("Irf8", "Havcr1"), group.by = "treatment")
+  
+  DimPlot(se, reduction = "tsne", split.by = "slide1", ncol = 3, label = TRUE) +theme_pubr(legend = "bottom")
+  DimPlot(se, reduction = "umap", split.by = "slide1", ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+  DimPlot(se, reduction = "tsne", split.by = "treatment",ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+  DimPlot(se, reduction = "umap", split.by = "treatment",ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+  plotumap + plottsne
+
+  ST.FeaturePlot(object = se, features = "seurat_clusters", 
+                 pt.size = 1, ncol = 3, value.scale = "all",dark.theme = F, cols = col_vector) + theme_pubr()
+  ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1.5, ncol = 3, 
+                 value.scale = "all",dark.theme = F) + theme_nothing()
+  ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1, ncol = 3, 
+                 legend.align = "bottom", value.scale = "all", dark.theme = F, label=TRUE) + theme_cleantable()
+  
+  s1 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 1, 
+                 split.labels = T, show.sb = FALSE, ncol = 10)
+  s2 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 2, 
+                 split.labels = T, show.sb = FALSE, ncol = 10)
+  s3 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 3, 
+                 split.labels = T, show.sb = FALSE, ncol = 10)
+  s4 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 4,
+                 split.labels = T, show.sb = FALSE, ncol = 10)
+  s5 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 5,
+                 split.labels = T, show.sb = FALSE, ncol = 10)
+  s6 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 6,
+                 split.labels = T, show.sb = FALSE, ncol = 10)
+  ggarrange(s1, s2, s3, s4, s5, s6,  nrow = 6, ncol = 10, legend = "right", common.legend = TRUE) #s4, s5, s6,
+
+# After clustering
+clust_feat = clustspots(se) #simple stats
+
+# Plot the distribution
+  plotpie = ggplot(clust_feat, aes(x="", y=clust_feat$all, fill=clust_feat$clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean() + labs(fill="Clusters")+
+    theme(legend.position = "none", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+  
+  plotpie17 = ggplot(clust_feat, aes(x="", y=D17, fill=clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+    theme(legend.position = "none", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+  
+  plotpie19 = ggplot(clust_feat, aes(x="", y=D19, fill=clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+    theme(legend.position = "none", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+  
+  plotpie54 = ggplot(clust_feat, aes(x="", y=D54, fill=clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+    theme(legend.position = "bottom", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+  
+  plotpie12 = ggplot(clust_feat, aes(x="", y=D12, fill=clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+    theme(legend.position = "bottom", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+  
+  plotpie20 = ggplot(clust_feat, aes(x="", y=D20, fill=clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+    theme(legend.position = "bottom", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+  
+  plotpie53 = ggplot(clust_feat, aes(x="", y=D53, fill=clusters)) +
+    geom_bar(stat="identity", width=1, colour = "white") + coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+    theme(legend.position = "bottom", axis.text = element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank())
+
+# Post clustering, distribution
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+ggarrange(plotpie17, plotpie19, plotpie54, plotpie12, plotpie20, plotpie53,
+          common.legend = TRUE, legend = "right",  ncol = 3, nrow = 2, 
+          labels = c("D17", "D19", "D54", "D12", "D20", "D53" ))
+```
+
+# Compare each cluster vs rest of tissue
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+# All DGE of cluster vs rest of tissue
+clustvslist = clustvsrest(se, log2(1.5)) # lfcthreshold = can be adjusted
+
+se.markers.all = clustvslist[[1]]
+se.markers.up = clustvslist[[2]]
+se.markers.down = clustvslist[[3]]
+clustvsrestup.rds = clustvslist[[6]]
+clustvsrestdown.rds = clustvslist[[7]]
+
+setup = "rds"
+# saveRDS(clustvslist, paste0(setup, "/clustvsrestFC1.5.rds"))
+# saveRDS(se.markers.all, paste0(setup, "/sefindallmarkersFC1.5.rds"))
+# saveRDS(se.markers.up,  paste0(setup, "/se.markers.upFC1.5.rds"))
+# saveRDS(se.markers.down,  paste0(setup, "/se.markers.downFC1.5.rds"))
+
+ftx=head(se@assays$SCT@var.features, 20)
+heatmap.colors = c("lightgray", "mistyrose", "red", "darkred", "black")
+
+p.fts = lapply(ftx, function(ftr){
+  FeaturePlot(se, features = ftr, reduction = "umap", order = TRUE, cols = heatmap.colors)})
+
+ST.FeaturePlot(se, features = ftx, ncol = 6, grid.ncol = 1, 
+                    cols = heatmap.colors, pt.size = 1, show.sb = FALSE)
+FeatureOverlay(se, features = "Itgax",  sampleids = 1:6,
+              cols = c("lightgray", "mistyrose", "red", "darkred", "black"),
+              pt.size = 1.5,  pt.alpha = 0.5,  ncol = 3)
+```
+
+# Compare each cluster vs each other for all samples (pairwise, res 0.3)
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+se.temp = se
+t3 = c()
+t3 = length(levels(se@meta.data$seurat_clusters))
+logfc.threshold = log2(1.2) # can set this
+
+for (j in 1:(t3-1)){
+  k = (j-1)
+  se.markers.pw = c()
+  se.stats=c()
+  comp = c()
+  check = c()
+  for (i in (k+1):(t3-1)){
+    se.markers.pw[[i]] = FindMarkers(se.temp, ident.1 = k, ident.2 = i, 
+                                        min.pct = 0.1, logfc.threshold = logfc.threshold, 
+                                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+    comp = paste0("c", k, " vs c:", i, sep = "")
+    se.markers.pw[[i]] = cbind(comp, se.markers.pw[[i]])
+    check=se.markers.pw[[i]]$avg_log2FC
+    se.stats[[i]] = c(length(which(check>0)), length(which(check<0)))
+    }
+
+    if (k == 0){
+      se.stats=as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("O vs 1", "O vs 2", "O vs 3",  "O vs 4",  "O vs 5", 
+                              "O vs 6" , "O vs 7", "O vs 8","O vs 9")
+      setClass("cluster0",
+               slots = c(comp0vs1 = "data.frame", comp0vs2 = "data.frame",
+                        comp0vs3 = "data.frame", comp0vs4 = "data.frame",
+                        comp0vs5 = "data.frame", comp0vs6 = "data.frame",
+                        comp0vs7 = "data.frame", comp0vs8 = "data.frame", 
+                        comp0vs9 = "data.frame", compstat = "data.frame"),
+               prototype = list(comp0vs1 = data.frame(), comp0vs2 = data.frame(),
+                                comp0vs3 = data.frame(), comp0vs4 = data.frame(),
+                                comp0vs5 = data.frame(), comp0vs6 = data.frame(),
+                                comp0vs7 = data.frame(), comp0vs8 = data.frame(),
+                                comp0vs9 = data.frame(), compstat = data.frame())) 
+      clust.0vs = new("cluster0",comp0vs1 = se.markers.pw[[1]], 
+                       comp0vs2 = se.markers.pw[[2]],
+                       comp0vs3 = se.markers.pw[[3]], comp0vs4 = se.markers.pw[[4]],
+                       comp0vs5 = se.markers.pw[[5]], comp0vs6 = se.markers.pw[[6]],
+                       comp0vs7 = se.markers.pw[[7]], comp0vs8 = se.markers.pw[[8]],
+                       comp0vs9 = se.markers.pw[[9]], compstat = se.stats) 
+      saveRDS(clust.0vs, "rds/clust0vs.rds")
+
+    } else if (k == 1) {
+      se.stats = se.stats[2:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("1 vs 2", "1 vs 3", "1 vs 4",  "1 vs 5",  
+                              "1 vs 6",  "1 vs 7", "1 vs 8", "1 vs 9")
+      setClass("cluster1",
+               slots = c(comp1vs2 = "data.frame", comp1vs3 = "data.frame",
+                         comp1vs4 = "data.frame", comp1vs5 = "data.frame",
+                         comp1vs6 = "data.frame", comp1vs7 = "data.frame",
+                         comp1vs8 = "data.frame",comp1vs9 = "data.frame",compstat = "data.frame"),
+               prototype = list(comp1vs2 = data.frame(), comp1vs3 = data.frame(),
+                                comp1vs4 = data.frame(), comp1vs5 = data.frame(),
+                                comp1vs6 = data.frame(), comp1vs7 = data.frame(),
+                                comp1vs8 = data.frame(),comp1vs9 = data.frame(),compstat = data.frame()))
+      clust.1vs = new("cluster1", comp1vs2 = se.markers.pw[[2]],
+                   comp1vs3 = se.markers.pw[[3]], comp1vs4 = se.markers.pw[[4]],
+                   comp1vs5 = se.markers.pw[[5]], comp1vs6 = se.markers.pw[[6]],
+                   comp1vs7 = se.markers.pw[[7]], comp1vs8 = se.markers.pw[[8]],  
+                   comp1vs9 = se.markers.pw[[9]], compstat = se.stats)
+      saveRDS(clust.1vs, "rds/clust1vs.rds")
+
+    } else if (k == 2) {
+      se.stats = se.stats[3:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("2 vs 3", "2 vs 4", "2 vs 5", "2 vs 6", "2 vs 7", "2 vs 8", "2 vs 9")
+      setClass("cluster2",
+               slots = c(comp2vs3 = "data.frame", comp2vs4 = "data.frame",
+                         comp2vs5 = "data.frame", comp2vs6 = "data.frame", comp2vs7 = "data.frame",
+                         comp2vs8 = "data.frame",comp2vs9 = "data.frame",compstat = "data.frame"),
+      prototype = list(comp2vs3 = data.frame(), comp2vs4 = data.frame(),
+                       comp2vs5 = data.frame(), comp2vs6 = data.frame(),
+                       comp2vs7 = data.frame(), comp2vs8 = data.frame(),
+                       comp2vs9 = data.frame(), compstat = data.frame()))
+      clust.2vs = new("cluster2", comp2vs3 = se.markers.pw[[3]],
+                   comp2vs4 = se.markers.pw[[4]], comp2vs5 = se.markers.pw[[5]],
+                   comp2vs6 = se.markers.pw[[6]], comp2vs7 = se.markers.pw[[7]], 
+                   comp2vs8 = se.markers.pw[[8]], comp2vs9 = se.markers.pw[[9]],compstat = se.stats)
+      saveRDS(clust.2vs, "rds/clust2vs.rds")
+
+    } else if (k ==3) {
+      se.stats = se.stats[4:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("3 vs 4", "3 vs 5", "3 vs 6", "3 vs 7", "3 vs 8", "3 vs 9" )
+      setClass("cluster3",
+               slots = c(comp3vs4 = "data.frame", comp3vs5 = "data.frame",
+                         comp3vs6 = "data.frame", comp3vs7 = "data.frame",
+                         comp3vs8 = "data.frame",comp3vs9 = "data.frame",
+                         compstat = "data.frame"),
+               prototype = list(comp3vs4 = data.frame(), comp3vs5 = data.frame(),
+                                comp3vs6 = data.frame(), comp3vs7 = data.frame(),
+                                comp3vs8 = data.frame(),comp3vs9 = data.frame(),
+                                compstat = data.frame()))
+      clust.3vs = new("cluster3", comp3vs4 = se.markers.pw[[4]],
+                   comp3vs5 = se.markers.pw[[5]], comp3vs6 = se.markers.pw[[6]],
+                   comp3vs7 = se.markers.pw[[7]], comp3vs8 = se.markers.pw[[8]],
+                   comp3vs9 = se.markers.pw[[9]], compstat = se.stats)
+      saveRDS(clust.3vs, "rds/clust3vs.rds")
+
+    }  else if (k ==4) {
+      se.stats = se.stats[5:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("4 vs 5", "4 vs 6", "4 vs 7", "4 vs 8", "4 vs 9")
+      setClass("cluster4",
+               slots = c(comp4vs5 = "data.frame", comp4vs6 = "data.frame",
+                         comp4vs7 = "data.frame", comp4vs8 = "data.frame",
+                         comp4vs9 = "data.frame", compstat = "data.frame"),
+               prototype = list(comp4vs5 = data.frame(),comp4vs6 = data.frame(),
+                                comp4vs7 = data.frame(),comp4vs8 = data.frame(),
+                                comp4vs9 = data.frame(), compstat = data.frame()))
+      clust.4vs = new("cluster4", comp4vs5 = se.markers.pw[[5]],comp4vs6 = se.markers.pw[[6]],
+                       comp4vs7 = se.markers.pw[[7]], comp4vs8 = se.markers.pw[[8]],
+                       comp4vs9 = se.markers.pw[[9]], compstat = se.stats)
+      saveRDS(clust.4vs, "rds/clust4vs.rds")
+
+    } else if(k ==5) {
+      se.stats = se.stats[6:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("5 vs 6", "5 vs 7", "5 vs 8", "5 vs 9")
+      setClass("cluster5",  
+               slots = c(comp5vs6 = "data.frame", comp5vs7 = "data.frame",
+                         comp5vs8 = "data.frame", comp5vs9 = "data.frame",
+                         compstat = "data.frame"), 
+               prototype = list(comp5vs6 = data.frame(), comp5vs7 = data.frame(),
+                                comp5vs8 = data.frame(), comp5vs9 = data.frame(),
+                                compstat = data.frame())) 
+      clust.5vs = new("cluster5", comp5vs6 = se.markers.pw[[6]],
+                       comp5vs7 = se.markers.pw[[7]], comp5vs8 = se.markers.pw[[8]], 
+                       comp5vs9 = se.markers.pw[[9]], compstat = se.stats)
+      saveRDS(clust.5vs, "rds/clust5vs.rds")
+      
+    }  else if (k ==6) {
+      se.stats = se.stats[7:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("6 vs 7", "6 vs 8", "6 vs 9")
+      setClass("cluster6",  
+               slots = c(comp6vs7 = "data.frame", comp6vs8 = "data.frame", 
+                         comp6vs9 = "data.frame", compstat = "data.frame"), 
+               
+               prototype = list(comp6vs7 = data.frame(), comp6vs8 = data.frame(),
+                                comp6vs9 = data.frame(), compstat = data.frame())) 
+      clust.6vs = new("cluster6", comp6vs7 = se.markers.pw[[7]],
+                       comp6vs8 = se.markers.pw[[8]],comp6vs9 = se.markers.pw[[9]],
+                      compstat = se.stats)
+      saveRDS(clust.6vs, "rds/clust6vs.rds")
+      
+    } else if (k ==7) {
+      se.stats = se.stats[8:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c( "7 vs 8", "7 vs 9")
+      setClass("cluster7",  
+               slots = c(comp7vs8 = "data.frame", comp7vs9 = "data.frame", compstat = "data.frame"), 
+               prototype = list(comp7vs8 = data.frame(),
+                                comp7vs9 = data.frame(), compstat = data.frame())) 
+      clust.7vs = new("cluster7",comp7vs8 = se.markers.pw[[8]],
+                       comp7vs9 = se.markers.pw[[9]], compstat = se.stats)
+      saveRDS(clust.7vs, "rds/clust7vs.rds")
+      
+    } else if (k ==8) {
+      se.stats = se.stats[9:(t3-1)]
+      se.stats = as.data.frame(se.stats)
+      rownames(se.stats) = c("Up", "Down")
+      colnames(se.stats) = c("8 vs 9")
+      setClass("cluster8",  
+               slots = c(comp8vs9 = "data.frame", compstat = "data.frame"), 
+               prototype = list(comp8vs9 = data.frame(), compstat = data.frame())) 
+      clust.8vs = new("cluster8", comp8vs9 = se.markers.pw[[9]],
+                      compstat = se.stats)
+      saveRDS(clust.8vs, "rds/clust8vs.rds")
+    }  else { print("complete")}
+}
+
+se.individuals = cbind(clust.1vs@compstat,  clust.2vs@compstat, clust.3vs@compstat,
+                        clust.4vs@compstat, clust.5vs@compstat, 
+                        clust.6vs@compstat, clust.7vs@compstat,  clust.8vs@compstat)
+se.individuals = t(se.individuals)
+se.individuals = data.frame(se.individuals)
+```
+
+# Set up data for each cluster - check between treatment group
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+cluster = # set this
+logfc.threshold = log2(1.2)
+
+  id1 = "LPSTol"
+  id2 = "TolDC"
+  id3 = "PBS"
+  setClass("cluster.treatment",
+         slots = c(lpstol.tol = "data.frame", 
+                   lpstol.pbs = "data.frame",
+                   tol.pbs = "data.frame"),
+         prototype = list(lpstol.tol = data.frame(), 
+                          lpstol.pbs = data.frame(),
+                          tol.pbs = data.frame()))
+  
+  # split the groups into clusters based on treatment groups
+  check = SubsetSTData(se, expression = SCT_snn_res.0.3 == cluster)
+  Idents(check) = 'SCT_snn_res.0.3'
+  check.pbs = c()
+  check.pbs = SubsetSTData(check, expression = treatment == "PBS")
+  check.ltoldc = c()
+  check.ltoldc = SubsetSTData(check, expression = treatment == "LPSTol")
+  check.toldc = c()
+  check.toldc = SubsetSTData(check, expression = treatment == "TolDC")
+  check.m = c()
+  check.m = MergeSTData(check.pbs,c(check.toldc,  check.ltoldc))
+
+  # LPSTolDC vs TolDC
+  check.markers.id1v2 = FindMarkers(check.m, ident.1 = id1, ident.2 = id2, 
+                                    group.by = 'treatment', 
+                                    subset.ident = as.character(cluster), 
+                                    logfc.threshold = logfc.threshold, 
+                                    min.pct = 0.05)
+  check.markers.id1v2 = clustpprocess(check.markers.id1v2)
+
+  ggplot(data=check.markers.id1v2, 
+                        aes(x=avg_log2FC, y=-log10(p_val_adj), 
+                            col=diffexpressed, label=dlabel)) +
+        geom_point() + theme_minimal() + geom_text_repel() +
+        scale_color_manual(values=c("blue", "black", "red")) +
+        geom_vline(xintercept=c(-0.5, 0.5), col="pink") +
+        geom_hline(yintercept=-log10(0.05), col="pink") + 
+        ggtitle("LPSTolDC vs TolDC")
+  
+  # LPS-TolDC vs PBS
+  check.markers.id1v3 = FindMarkers(check.m, ident.1 = id1, ident.2 = id3, 
+                                    group.by = 'treatment', 
+                                    subset.ident = as.character(cluster), 
+                                    logfc.threshold = logfc.threshold, min.pct = 0.05)
+  check.markers.id1v3 = clustpprocess(check.markers.id1v3)
+    ggplot(data=check.markers.id1v3, aes(x=avg_log2FC, 
+                                         y=-log10(p_val_adj), 
+                                         col=diffexpressed, label=dlabel)) +
+        geom_point() + theme_minimal() + geom_text_repel() +
+        scale_color_manual(values=c("blue", "black","red")) +
+        geom_vline(xintercept=c(-0.5, 0.5), col="pink") +
+        geom_hline(yintercept=-log10(0.05), col="pink") + ggtitle("LPSTolDC vs PBS")
+    
+  # TolDC vs PBS
+  check.markers.id2v3 = FindMarkers(check.m, ident.1 = id2, ident.2 = id3, 
+                                    group.by = 'treatment', 
+                                     subset.ident = as.character(cluster), 
+                                    logfc.threshold = logfc.threshold, min.pct = 0.05)
+  check.markers.id2v3 = clustpprocess(check.markers.id2v3)
+  ggplot(data=check.markers.id2v3, 
+                        aes(x=avg_log2FC, y=-log10(p_val_adj), 
+                            col=diffexpressed, label=dlabel)) +
+        geom_point() + theme_minimal() + geom_text_repel() +
+        scale_color_manual(values=c("blue", "black", "red")) +
+        geom_vline(xintercept=c(-0.5, 0.5), col="pink") +
+        geom_hline(yintercept=-log10(0.05), col="pink") + 
+        ggtitle("LPSTolDC vs TolDC")
+  
+  cluster.treatment = c()
+  cluster.treatment = new("cluster.treatment",
+                            lpstol.tol = check.markers.id1v2, 
+                            lpstol.pbs = check.markers.id1v3,
+                            tol.pbs = check.markers.id2v3)
+```
+
+# Simple markers for clusters - compare this to SpotLight and Giotto scripts later
+```{r}
+DotPlot(se, 
+        features = c("Havcr1", "Lcn2", "Krt20",  "Myc", "Cryab", "Hspa1a",  "Nphs1", "Nphs2", 
+                     "Lrp2", "Hnf4a", "Slc5a2", "Slc5a12", "Slc7a13", 
+                     "Aqp1", "Slc12a1", "Slc12a3", "Calb1",  "Slc26a4", "Scnn1b", "Atp6v1g3", 
+                     "Flt1", "FPdgfrb", "Ptprc")) + RotatedAxis() + scale_colour_viridis()
+```
+
+# Nebulosa - try to find DC using signatures
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+# from TolDC sequencing: 1)Common DEG vs all others, 2) LPST and Tol > LPS at same time LPST > Tol
+lpst.deg.track = readRDS("rds/signature.toldc.RDS")
+lpst.track2 = # pick the column of lpst.deg.track (by top 30 p.adj, fdr or mixed metric (lfc*log(p.adj)))
+remove = lpst.track2[grep("Rik", lpst.track2, ignore.case = FALSE)]
+nebulosa.set = lpst.track2[!(rownames(lpst.track2) %in% remove),]
+
+p.LPSTolDC = Nebulosa::plot_density(se, c(nebulosa.set[1:20,]),  joint = TRUE, combine = FALSE)
+p.LPSTolDC1 = p.LPSTolDC # pick final one $ (combination of genes)
+p.LPSTolDC1 = p.LPSTolDC +facet_grid(~se$treatment)
+```
+
+# Pick a cluster, ie-cluster 7 to see if can further find cell types for comparison to label transfer 
+```{r,  warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+se.7 = SubsetSTData(se, seurat_clusters == 7)
+se.7 = clustpack(se.7) #: c(0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1, 1.2)
+se.7.2 = clustresolve(se.7)
+se.7 = clustpackres(se.7, 0.6)
+gc()
+
+plotumap = DimPlot(se.7, reduction = "umap", ncol = 3, 
+                    label = TRUE) +theme_pubr(legend = "right")
+
+plotslideseurat = ST.FeaturePlot(object = se.7, features = "seurat_clusters", pt.size = 1, 
+                 ncol = 2, legend.align = "bottom", value.scale = "all",
+                 dark.theme = F, label=TRUE, cols = col_vector) + theme_pubr(legend = "right")
+
+ST.FeaturePlot(object = se.7, features = "seurat_clusters", 
+               pt.size = 1, ncol = 3, value.scale = "all",
+               dark.theme = F, cols = col_vector) + theme_pubr()
+
+p.se.7 = Nebulosa::plot_density(se.7, c("Cd274", "Itgax", "Lamtor3", "Msr1", "Il33", "Sirpa"),
+                                    joint = TRUE, combine = FALSE)
+
+p.se.7 = p.se.7$`Cd274+ Itgax+ Lamtor3+ Msr1+ Il33+ Sirpa+` + facet_grid(.~se.7$treatment)
+```
+
+# Combine GSEA results for cluster vs rest for combined samples
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+gc()
+clust0vr = clustall(se.markers.all.0, 0)
+clust1vr = clustall(se.markers.all.0, 1)
+clust2vr = clustall(se.markers.all.0, 2)
+clust3vr = clustall(se.markers.all.0, 3)
+clust4vr = clustall(se.markers.all.0, 4)
+clust5vr = clustall(se.markers.all.0, 5)
+clust6vr = clustall(se.markers.all.0, 6)
+clust7vr = clustall(se.markers.all.0, 7)
+clust8vr = clustall(se.markers.all.0, 8)
+clust9vr = clustall(se.markers.all.0, 9)
+
+### GSE analysis ###
+threshold = # set this
+gsevsrest0 = ggosummarybp(gene0symbol(clust0vr[abs(clust0vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest1 = ggosummarybp(gene0symbol(clust1vr[abs(clust1vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest2 = ggosummarybp(gene0symbol(clust2vr[abs(clust2vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest3 = ggosummarybp(gene0symbol(clust3vr[abs(clust3vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest4 = ggosummarybp(gene0symbol(clust4vr[abs(clust4vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest5 = ggosummarybp(gene0symbol(clust5vr[abs(clust5vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest6 = ggosummarybp(gene0symbol(clust6vr[abs(clust6vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest7 = ggosummarybp(gene0symbol(clust7vr[abs(clust7vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest8 = ggosummarybp(gene0symbol(clust8vr[abs(clust8vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+gsevsrest9 = ggosummarybp(gene0symbol(clust9vr[abs(clust9vr$avg_log2FC)>threshold,]), 0.05, "BH", "all")
+
+# custom checks
+custom.gsea = function(data){
+  test1 = data.frame(data)
+  test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+  test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1 = removecrap(test1)
+  return(test1)}
+
+test.0 = custom.gsea(gsevsrest0$gsego.bp)
+test.1 = custom.gsea(gsevsrest1$gsego.bp)
+test.2 = custom.gsea(gsevsrest2$gsego.bp)
+test.3 = custom.gsea(gsevsrest3$gsego.bp)
+test.4 = custom.gsea(gsevsrest4$gsego.bp)
+test.5 = custom.gsea(gsevsrest5$gsego.bp)
+test.6 = custom.gsea(gsevsrest6$gsego.bp)
+test.7 = custom.gsea(gsevsrest7$gsego.bp)
+test.8 = custom.gsea(gsevsrest8$gsego.bp)
+test.9 = custom.gsea(gsevsrest9$gsego.bp)
+
+test.0$cluster = as.factor(0)
+test.1$cluster = as.factor(1)
+test.2$cluster = as.factor(2)
+test.3$cluster = as.factor(3)
+test.4$cluster = as.factor(4)
+test.5$cluster = as.factor(5)
+test.6$cluster = as.factor(6)
+test.7$cluster = as.factor(7)
+test.8$cluster = as.factor(8)
+test.9$cluster = as.factor(9)
+
+test.0a = pickrelevant(test.0)
+test.1a = pickrelevant(test.1)
+test.2a = pickrelevant(test.2)
+test.3a = pickrelevant(test.3)
+test.4a = pickrelevant(test.4)
+test.5a = pickrelevant(test.5)
+test.6a = pickrelevant(test.6)
+test.7a = pickrelevant(test.7)
+test.8a = pickrelevant(test.8)
+test.9a = pickrelevant(test.9)
+
+  gsea.combined = rbind(test.0, test.1, test.2, test.3, 
+                        test.4, test.5, test.6, 
+                        test.7, test.8, test.9)
+  
+  gsea.combined.a = rbind(test.0a, test.1a, test.2a, test.3a, 
+                        test.4a, test.5a, test.6a, 
+                        test.7a, test.8a, test.9a)
+  
+  gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "viral entry into host cell"),]
+  gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "neuroinflammatory response"),]
+  gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "immune response"),]
+  gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "immune system process"),]
+  gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "enzyme linked receptor protein signaling pathway"),]
+  gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "inflammatory response"),]
+
+  plot.a = gsea.combined.a[gsea.combined.a$p.adjust<0.05,]
+  plot.a1 = pickimmune(plot.a)
+  plot.a1$log.p.adj = ifelse(plot.a1$Pathway.Direction == "Suppressed", -1*plot.a1$log.p.adj, plot.a1$log.p.adj)
+  plot.a2 = plot.a[!(plot.a$Description %in% plot.a1$Description),]
+  plot.a2$log.p.adj = ifelse(plot.a2$Pathway.Direction == "Suppressed", -1*plot.a2$log.p.adj, plot.a2$log.p.adj)
+
+  gsea.combined = readRDS("rds/gsea.combined.rds")
+  gsea.combined.a = readRDS("rds/gsea.combined.a.rds")
+  ggplot(plot.a1,  aes(y= Description, x = log.p.adj, fill = cluster))+
+    geom_bar(stat = "identity")+
+    theme(axis.text.y = element_text(size = 12))+
+    geom_vline(xintercept=0)
+
+  test = ggosummarybp(gene0symbol(clust8vr[abs(clust8vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+  test = test$gsego.bp
+  test@result = pickrelevant(test@result)
+  test = pairwise_termsim(test)
+  gofilter(test, level = 2)
+  emapplot(test, showCategory = 20)
+  cnetplot(test, showCategory = 20)
+```
+
+# Combine GSEA results for clusters between tissue samples
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+gc()
+threshold = # set this
+lpst.0 = gsea.lpstol.v.rest.03(se, 0, threshold)
+lpst.1 = gsea.lpstol.v.rest.03(se, 1, threshold)
+lpst.3 = gsea.lpstol.v.rest.03(se, 3, threshold)
+lpst.7 = gsea.lpstol.v.rest.03(se, 7, threshold)
+lpst.8 = gsea.lpstol.v.rest.03(se, 8, threshold)
+```
+  
+# Cluster between groups (LPSTol vs (Tol+BMDC))
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+gc()
+cluster = c()
+cluster =  # set this
+
+id1 = "LPSTol"
+id2 = "TolDC"
+id3 = "PBS"
+
+  check = c()
+  check = SubsetSTData(se, expression = SCT_snn_res.0.3 == cluster)
+  Idents(check) = 'SCT_snn_res.0.3'
+  check.pbs = SubsetSTData(check, expression = treatment == "PBS")
+  check.ltoldc = SubsetSTData(check, expression = treatment == "LPSTol")
+  check.toldc = SubsetSTData(check, expression = treatment == "TolDC")
+  check.m = MergeSTData(check.pbs,c(check.toldc,  check.ltoldc))
+  
+  check.markers.id1v2 = FindMarkers(check.m, ident.1 = id1, ident.2 = id2, 
+                                    group.by = 'treatment', 
+                                    subset.ident = as.character(cluster), 
+                                    recorrect_umi = FALSE,
+                                    logfc.threshold = log2(1.1), 
+                                    min.pct = 0.05)
+  check.markers.id1v2 = clustpprocess(check.markers.id1v2)
+  c0v1ggo.id1v2bp = ggosummarybp(gene0symbol(check.markers.id1v2), 0.05, "BH", "all")
+  test1 = data.frame(c0v1ggo.id1v2bp$gsego.bp)
+  test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+  test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1 = remove.go(test1)
+  test1.a = pickimmune(test1)
+  ggplot(test1.a, 
+    aes(x = log.p.adj, y = Description)) + theme_bw() + 
+    geom_point(aes(color= p.adjust, size = setSize)) + 
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("-log10 of P-value") +  ylab("Description") + 
+    ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+  
+  check.markers.id1v3 = FindMarkers(check.m, ident.1 = id1, ident.2 = id3, 
+                                    group.by = 'treatment', 
+                                    subset.ident = as.character(cluster), 
+                                    recorrect_umi = FALSE,
+                                    logfc.threshold = log2(1.1), 
+                                    min.pct = 0.05)
+  check.markers.id1v3 = clustpprocess(check.markers.id1v3)
+  c0v1ggo.id1v3bp = ggosummarybp(gene0symbol(check.markers.id1v3), 0.05, "BH", "all")
+  test2 = data.frame(c0v1ggo.id1v3bp$gsego.bp)
+  test2 = test2 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test2, NES)
+  test2$Pathway.Direction = cut(-1*test2$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test2 = remove.go(test2)
+  test2.a = pickimmune(test2)
+  ggplot(test1[test1$setSize>20 & test1$p.adjust < 0.03,], 
+    aes(x = log.p.adj, y = Description)) + theme_bw() + 
+    geom_point(aes(color= p.adjust, size = setSize)) + 
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("-log10 of P-value") +ylab("Description") + 
+    ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+
+  test1 = c()
+  test1 = data.frame(c0v1ggo.id1v2bp$gsego.bp)
+  test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+  test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1 = removecrap(test1)
+  test1.a = pickimmune(test1)
+  
+  test2 = c()
+  test2 = data.frame(c0v1ggo.id1v3bp$gsego.bp)
+  test2 = test2 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test2, NES)
+  test2$Pathway.Direction = cut(-1*test2$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test2 = removecrap(test2)
+  test2.a = pickimmune(test2)
+
+    common = test1[test1$Description %in% test2$Description,]
+    common.keep = common[common$Pathway.Direction == test2$Pathway.Direction,]
+    common.keep = common.keep[!is.na(common.keep$Pathway.Direction),]
+    remove = common.keep$Description[grep("anatomical", common.keep$Description, ignore.case = TRUE)]
+    common.keep = common.keep[!(common.keep$Description %in% remove),]
+    common.keep = pickrelevant(common.keep)
+    common.keep = common.keep[1:27,]
+    common.keep = common.keep[ common.keep$Description!= "plasma membrane bounded cell projection morphogenesis",]
+
+  ggplot(common.keep[common.keep$p.adjust < 0.05,], 
+    aes(x = log.p.adj, y = fct_inorder(Description))) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 12)) +
+    xlab("-log10 of P-value") + ylab("Description") + 
+    ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+
+```
+  
+# Combine GSEA results for set of comparisons: vs rest, vs spec cluster and vs neighbour
+```{r}
+gc()
+
+# use cluster 6 as an example
+cluster = c()
+cluster = 6
+thrs = # set
+  
+# cluster vs rest of tissues/clusters 
+clustvr = c()
+clustvr = clustall(se.markers.all.0, cluster)
+vrestbp = ggosummarybp(gene0symbol(clustvr[abs(clustvr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+test1 = data.frame(vrestbp$gsego.bp)
+test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+test1 = remove.go(test1)
+test1.a = pickimmune(test1)
+
+# 6 vs 3
+  se.3.6 = FindMarkers(se, ident.1 = 3, ident.2 = 6,
+                        min.pct = 0.5, logfc.threshold = thrs, 
+                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+  cse.3.6 = clustpprocess(se.3.6)
+  v.3.6 = ggosummarybp(gene0symbol(cse.3.6[abs(cse.3.6$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+  test3.6 = data.frame(v.3.6$gsego.bp)
+  test3.6 = test3.6 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test3.6, NES)
+  test3.6$Pathway.Direction = cut(-1*test3.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test3.6 = remove.go(test3.6)
+  test3.6.a = pickimmune(test3.6)
+  test3.6r = test3.6 # reverse so 6 vs.
+  test3.6r$Pathway.Direction = cut(1*test3.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+
+  
+# 6 vs 0
+  se.0.6 = FindMarkers(se, ident.1 = 0, ident.2 = 6,
+                        min.pct = 0.5, logfc.threshold = thrs, 
+                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+  cse.0.6 = clustpprocess(se.0.6)
+  v.0.6 = ggosummarybp(gene0symbol(cse.0.6[abs(cse.0.6$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+  test0.6 = data.frame(v.0.6$gsego.bp)
+  test0.6 = test0.6 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test0.6, NES)
+  test0.6$Pathway.Direction = cut(-1*test0.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test0.6 = remove.go(test0.6)
+  test0.6.a = pickimmune(test0.6)
+  test0.6r = test0.6
+  test0.6r$Pathway.Direction = cut(1*test0.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+
+  # 6 vs neighbours
+  se.near = se
+  se.near = SetIdent(se.near, value = "seurat_clusters")
+  se.near = RegionNeighbours(se.near, id = "6", verbose = TRUE)
+  FeatureOverlay(se.near, features = "nbs_6",
+               sampleids = 3, cols = c("red", "lightgray"), pt.size = 2)
+  se.near = SetIdent(se.near, value = "nbs_6")
+  se.near.markers = FindMarkers(se.near, ident.1 = "6", 
+                              ident.2 = "nbs_6", logfc.threshold = log2(1.1))
+  se.near.markers$gene = rownames(se.near.markers)
+  se.near.subset = SubsetSTData(se.near, expression = nbs_6 %in% c("6", "nbs_6"))
+  sorted.marks = se.near.markers %>% top_n(n = 40, wt = abs(avg_log2FC))
+  sorted.marks = sorted.marks[order(sorted.marks$avg_log2FC, decreasing = T), ]
+  DoHeatmap(se.near.subset, features = sorted.marks$gene, 
+          group.colors = c("red", "lightgray"), disp.min = -2, disp.max = 2)
+  se.near.markers1 = se.near.markers[se.near.markers$p_val_adj < 0.05,]
+  se.near.markers1 = se.near.markers1[order(-se.near.markers1$avg_log2FC),]
+  se.near.markers2 = se.near.markers1$avg_log2FC
+  names(se.near.markers2) = se.near.markers1$gene
+  
+  se.near.gsea = ggosummarybp(se.near.markers2, 0.05, "BH", "all")
+  se.near.gsea1 = data.frame(se.near.gsea$gsego.bp)
+  se.near.gsea1 = se.near.gsea1 %>% 
+    dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(se.near.gsea1, NES)
+  se.near.gsea1$Pathway.Direction = 
+    cut(-1*se.near.gsea1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  se.near.gsea1 = remove.go(se.near.gsea1)
+  se.near.gsea1.a = pickimmune(se.near.gsea1)
+
+    ggplot(test1.a[test1.a$p.adjust<0.04,], 
+    aes(x = log.p.adj, y = Description)) + theme_bw() + 
+    geom_point(aes(color= p.adjust, size = setSize)) +
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("-log10 of P-value") + ylab("Description") + 
+    ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+
+  testc6 = list(test1, test3.6, test0.6, se.near.gsea1)
+
+  # clean up
+  test1 = testc6[[1]]
+    test1$compare = as.factor("6 vs rest")
+  test3.6r = testc6[[2]]
+   test3.6r$Pathway.Direction = cut(1*test3.6r$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test3.6r$compare = as.factor("6 vs 3")
+  test0.6r = testc6[[3]]
+    test0.6r$Pathway.Direction = cut(1*test0.6r$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test0.6r$compare = as.factor("6 vs 0")
+  se.near.gsea1 = testc6[[4]]
+    se.near.gsea1$compare = as.factor("6 vs neigbours")
+  test1 = pickrelevant(test1)
+  test3.6r = pickrelevant(test3.6r)
+  test0.6r = pickrelevant(test0.6r)
+  se.near.gsea1 = pickrelevant(se.near.gsea1)
+
+  test.combined = rbind(test1, test3.6r, test0.6r, se.near.gsea1)
+  test.combined = test.combined[!(test.combined$Description == "viral entry into host cell"),]
+  test.combined = test.combined[!(test.combined$Description == "neuroinflammatory response"),]
+  test.combined = test.combined[!(test.combined$Description == "immune response"),]
+  test.combined = test.combined[!(test.combined$Description == "immune system process"),]
+  test.combined = test.combined[!(test.combined$Description == "enzyme linked receptor protein signaling pathway"),]
+  test.combined = test.combined[!(test.combined$Description == "inflammatory response"),]
+
+  plot.a = test.combined[test.combined$p.adjust<0.05,]
+  plot.a1 = pickimmune(plot.a)
+  plot.a2 = plot.a[!(plot.a$Description %in% plot.a1$Description),]
+
+  ggplot(plot.a1[plot.a1$p.adjust<0.05,], 
+         aes(y= Description, x = log.p.adj, fill = compare))+
+  geom_bar(stat = "identity")+
+  theme(axis.text.y = element_text(size = 12))+ facet_grid(.~Pathway.Direction)
+
+  ggplot(test1.a[test1.a$p.adjust<0.05,], 
+    aes(x = log.p.adj, y = Description)) + theme_bw() + 
+    geom_point(aes(color= p.adjust, size = setSize)) +
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("-log10 of P-value") + ylab("Description") + 
+    ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+```
+  
+# Nebulosa to see co-expression specific pathways
+```{r, warning = FALSE, message = FALSE, results = FALSE, echo = FALSE}
+Nebulosa::plot_density(se, "Mmp10", joint = TRUE, combine = FALSE) + facet_grid(~se$treatment)
+Nebulosa::plot_density(se, "Cfh", joint = TRUE, combine = FALSE) + facet_grid(~se$treatment)
+Nebulosa::plot_density(se, "Ptprc", joint = TRUE, combine = FALSE) + facet_grid(~se$treatment)
+
+# acute injury/damage
+pattern = c()
+pattern = c("Havcr1", "Lcn2", "Cryab")
+p.acute = Nebulosa::plot_density(se, pattern, joint = TRUE, combine = FALSE) 
+p.acute1 = p.acute$Havcr1 + facet_grid(~se$treatment)
+p.acute2 = p.acute$Lcn2 + facet_grid(~se$treatment)
+p.acute3 = p.acute$Cryab + facet_grid(~se$treatment)
+p.acute4 = p.acute$`Havcr1+ Lcn2+ Cryab+` + facet_grid(~se$treatment)
+
+jpeg(paste0("figures/nebulosa.acute.jpg"), width = 1000, height = 400)
+ggarrange(p.acute1, p.acute2, p.acute3, p.acute4, ncol = 2, nrow = 2, common.legend = TRUE, legend = "right")
+dev.off()
+
+# repair
+pattern = c()
+
+p.acute = Nebulosa::plot_density(se, pattern, joint = TRUE, combine = FALSE) 
+p.acute1 = p.acute$Havcr1 + facet_grid(~se$treatment)
+p.acute2 = p.acute$Lcn2 + facet_grid(~se$treatment)
+p.acute3 = p.acute$Cryab + facet_grid(~se$treatment)
+p.acute4 = p.acute$`Havcr1+ Lcn2+ Cryab+` + facet_grid(~se$treatment)
+
+jpeg(paste0("figures/nebulosa.acute.jpg"), width = 1000, height = 400)
+ggarrange(p.acute1, p.acute2, p.acute3, p.acute4, ncol = 2, nrow = 2, common.legend = TRUE, legend = "right")
+dev.off()
+
+# Cell death
+# Pyroptosis
+pattern = c()
+pattern = c("Casp1", "Il1b", "Il18", "Nlrp3", "Gsdmd", "Aim2", "Scaf11", "Ptprc")
+p.pyrop = Nebulosa::plot_density(se, pattern, joint = TRUE, combine = FALSE) 
+p.pyrop1 = p.pyrop$Casp1 + facet_grid(~se$treatment)
+p.pyrop2 = p.pyrop$Nlrp3 + facet_grid(~se$treatment)
+p.pyrop3 = p.pyrop$Aim2 + facet_grid(~se$treatment)
+p.pyrop4 = p.pyrop$Il1b + facet_grid(~se$treatment)
+p.pyrop8 = p.pyrop$Il18 + facet_grid(~se$treatment)
+p.pyrop5 = p.pyrop$Gsdmd + facet_grid(~se$treatment)
+p.pyrop6 = p.pyrop$Scaf11 + facet_grid(~se$treatment)
+p.pyrop7 = p.pyrop$Ptprc + facet_grid(~se$treatment)
+
+jpeg(paste0("figures/nebulosa.pyroptosis.sep.jpg"), width = 1000, height = 800)
+ggarrange(p.pyrop2, p.pyrop3, p.pyrop1, p.pyrop4, p.pyrop5, p.pyrop6, p.pyrop7, p.pyrop8, ncol = 2, nrow = 4, common.legend = TRUE, legend = "right")
+dev.off()
+
+pattern = c( "Gsdmd", "Nlrp3", "Casp1", "Il1b", "Il18")
+p.pyrop.a = Nebulosa::plot_density(se, pattern, joint = TRUE, combine = FALSE) 
+p.pyrop.a = p.pyrop.a$`Gsdmd+ Nlrp3+ Casp1+ Il1b+ Il18+`+ facet_grid(~se$treatment)
+
+pattern = c("Gsdmd", "Scaf11", "Il18", "Il1b")
+p.pyrop.b = Nebulosa::plot_density(se, pattern, joint = TRUE, combine = FALSE) 
+p.pyrop.b = p.pyrop.b$`Gsdmd+ Scaf11+ Il18+ Il1b+` + facet_grid(~se$treatment)
+
+jpeg(paste0("figures/nebulosa.pyroptosis.pathways.jpg"), width = 600, height = 400)
+ggarrange(p.pyrop.a, p.pyrop.b, ncol = 1, common.legend = TRUE, legend = "right")
+dev.off()
+
+# Apoptosis
+pattern = c()
+pattern = c("Casp3", "Fas", "Bax", "Bak1", "Apaf1")
+p.death = Nebulosa::plot_density(se, pattern, joint = TRUE, combine = FALSE) 
+p.death = p.death$`Casp3+ Fas+ Bax+ Bak1+ Apaf1+`+ facet_grid(~se$treatment)
+
+p.death1 = Nebulosa::plot_density(se, c("Bcl2", "Bcl2l1", "Cflar", "Xiap", "Mcl1"), joint = TRUE, combine = FALSE) 
+p.death1 = p.death1$`Bcl2+ Bcl2l1+ Cflar+ Xiap+ Mcl1+` + facet_grid(~se$treatment)
+
+p.death2 = Nebulosa::plot_density(se, c(pattern, "Bcl2", "Bcl2l1", "Cflar", "Xiap", "Mcl1"), joint = TRUE, combine = FALSE) 
+p.death2 = p.death2$`Casp3+ Fas+ Bax+ Bak1+ Apaf1+ Bcl2+ Bcl2l1+ Cflar+ Xiap+ Mcl1+` + facet_grid(~se$treatment)
+
+jpeg(paste0("figures/nebulosa.apoptosis.jpg"), width = 600, height = 600)
+ggarrange(p.death, p.death1, p.death2, ncol = 1, common.legend = TRUE, legend = "right")
+dev.off()
+
+# Necroptosis
+p.necrop = Nebulosa::plot_density(se, c("Ripk1","Ripk3", "Mlkl"), joint = TRUE, combine = FALSE) 
+p.necrop1 = p.necrop$`Ripk1+ Ripk3+ Mlkl+` + facet_grid(~se$treatment)
+
+# Ferroptosis
+p.ferropa = Nebulosa::plot_density(se, c("Lox", "Ireb2", "Ptgs2", "Chac1"), joint = TRUE, combine = FALSE) 
+p.ferropa1 = p.ferropa$`Lox+ Ireb2+ Ptgs2+ Chac1+` + facet_grid(~se$treatment)
+
+p.ferropb = Nebulosa::plot_density(se, c("Gpx4", "Hspb1", "Prdx6", "Slc7a11"), joint = TRUE, combine = FALSE) 
+p.ferropb1 = p.ferropb$`Gpx4+ Hspb1+ Prdx6+ Slc7a11+` + facet_grid(~se$treatment)
+
+jpeg(paste0("figures/nebulosa.necrop.ferrop.jpg"), width = 600, height = 600)
+ggarrange(p.necrop1, p.ferropa1, p.ferropb1, ncol = 1, common.legend = TRUE, legend = "right")
+dev.off()
+
+jpeg(paste0("figures/nebulosa.cell.death.jpg"), width = 1000, height = 600)
+ggarrange(p.death, p.necrop1,p.pyrop.a, p.pyrop.b,  p.ferropa1, p.ferropb1, ncol = 2, nrow = 3, common.legend = TRUE, legend = "right")
+dev.off()
+
+# Find DC
+p.DC = Nebulosa::plot_density(se, c("Cd274", "Arglu1", "Irf3", "Casp7", "Irf8", "Irf9",
+                                    "Il27ra","Il21r", "Il2rg","Il13ra1", "Il11ra1",
+                                    "Il6st", "Il1rap", "Il33", "Ilkap",  "Ilk", "Ilf3",
+                                    "Bcl2a1a", "Bcl2l13","Bcl7a", "Ppard",
+                                     "Tgfbi", "Tgfb1", "Tgfb3", "Tgfbr3",
+                                    "Lamp1", "S100a13", "Cyp24a1"), joint = TRUE, combine = FALSE) 
+
+p1 = p.DC$`Cd274+ Arglu1+ Irf3+ Casp7+ Irf8+ Irf9+ Il27ra+ Il21r+ Il2rg+ Il13ra1+ Il11ra1+ Il6st+ Il1rap+ Il33+ Ilkap+ Ilk+ Ilf3+ Bcl2a1a+ Bcl2l13+ Bcl7a+ Ppard+ Tgfbi+ Tgfb1+ Tgfb3+ Tgfbr3+ Lamp1+ S100a13+ Cyp24a1+` + facet_grid(~se$treatment)
+
+Nebulosa::plot_density(se, c("Pax2", "Sox9", "Foxm1,), joint = TRUE, combine = FALSE)
+
+p.kirita = Nebulosa::plot_density(se, c("Havcr1", "Krt20", "Hspa1a"), joint = TRUE, combine = FALSE)
+
+jpeg(paste0("figures/nebulosa.injured.jpg"), width = 500, height = 200)
+p.kirita$`Havcr1+ Krt20+ Hspa1a+` +  facet_grid(~se$treatment)
+dev.off()
+
+p.kirita1 = Nebulosa::plot_density(se, c("Havcr1", "Krt20", "Lcn2"), joint = TRUE, combine = FALSE)
+
+jpeg(paste0("figures/nebulosa.injured1.jpg"), width = 500, height = 200)
+p.kirita1$`Havcr1+ Krt20+ Lcn2+` +  facet_grid(~se$treatment)
+dev.off()
+
+p.kirita2 = Nebulosa::plot_density(se, c("Havcr1", "Krt20", "Lcn2", "Hspa1a"), joint = TRUE, combine = FALSE)
+
+jpeg(paste0("figures/nebulosa.injured2.jpg"), width = 500, height = 200)
+p.kirita2$`Havcr1+ Krt20+ Lcn2+ Hspa1a` +  facet_grid(~se$treatment)
+dev.off()
+
+
+```
+
+
+
+
+
+
+
