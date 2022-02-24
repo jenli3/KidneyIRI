@@ -1,6 +1,8 @@
 ---
-title: "JLi Spatial Kidney AKI 2022"
-output: nil
+title: "Spatial mKidney AKI 2022"
+author: "JenLi"
+date: "24/02/2022"
+output: html_document
 ---
 
 # set working directory and load packages

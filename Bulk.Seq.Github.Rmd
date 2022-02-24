@@ -1,8 +1,8 @@
 ---
-title: 'TolDC: JLi 2022'
-output:
-  html_document:
-    df_print: paged
+title: "enrichedDC mKidney bulkRNAseq 2022"
+author: "JenLi"
+date: "24/02/2022"
+output: html_document
 ---
 
 # Set directory and load libraries
