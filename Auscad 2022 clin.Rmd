@@ -1,0 +1,2360 @@
+---
+title: "Auscad update 2022"
+author: "Jen Li"
+output: html_document
+---
+
+### Set up for analysis
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+setwd("~/Documents/Project data - R files/auscad/")
+  knitr::opts_chunk$set(echo = FALSE, cache = FALSE, message = FALSE, warning = FALSE)
+  set.seed(42)
+
+  source("data/setup.auscad.R")
+    # # RUN THIS KNIT for clean.data.R if needed
+      # source("data/clean.data.R")
+
+  # record of pkgs
+  writeLines(capture.output(sessionInfo()),"data/current.packages.txt")
+  write.table(pkg.versions, "data/package.versions.txt", append = FALSE,   
+              sep = " ", dec = ".",row.names = TRUE, col.names = TRUE)
+  
+# My data organised in the following way: metadata = clinical metadata, samples = sequencing metadata,  counts = raw counts matrix,  conversions = ensembl, entrez, symbols. Keep original so not overwritten
+  auscad.sorted = new("auscad.sorted",
+                      metadata.all = readRDS("data/annotatedDB.RDS"),
+                      samples.all = readRDS("data/samples.all.RDS"),
+                      counts.all = readRDS("data/counts.all.RDS"),
+                      conversions = readRDS("data/conversion.RDS"),
+                      samples.biopsy.0m = readRDS("data/biopsy0m.RDS"),
+                      counts.biopsy.0m = readRDS("data/counts0m.RDS"),
+                      samples.biopsy.1m = readRDS("data/biopsy1m.RDS"),
+                      counts.biopsy.1m = readRDS("data/counts1m.RDS"),
+                      samples.biopsy.3m = readRDS("data/biopsy3m.RDS"),
+                      counts.biopsy.3m = readRDS("data/counts3m.RDS"),
+                      samples.blood.0m = readRDS("data/blood0m.RDS"),
+                      counts.blood.0m = readRDS("data/bloodcounts0m.RDS"),
+                      samples.blood.3m = readRDS("data/blood3m.RDS"),
+                      counts.blood.3m = readRDS("data/bloodcounts3m.RDS"))
+
+# Variables/change levels etc of clin data
+dgf.filter = auscad.sorted@metadata.all
+dgf.filter$graft_number = as.factor(dgf.filter$graft_number)
+
+# Make matrix with only deceased donor KTx
+dktx.only = dgf.filter[dgf.filter$organ_type == "Kidney Transplant",]
+
+gc()
+```
+
+### At a glance
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Basic summaries
+dgf.filter %>% ggplot(aes(x = time.in.study)) + 
+  geom_histogram(color="gray", fill="white") + 
+  facet_grid(.~dgf_combined)
+
+dgf.filter %>% ggplot(aes(x = time.in.study)) + 
+  geom_histogram(color="gray", fill="white") + 
+  facet_grid(.~dgf_define)
+
+dgf.filter %>% ggplot(aes(x = time.in.study)) + 
+  geom_histogram(color="gray", fill="white") + 
+  facet_grid(.~d2.drop)
+
+# Number of biopsy RNAseq available at 0m
+gene.check = auscad.sorted@samples.biopsy.0m
+gene.check$dgf_hd_criteria = factor(gene.check$dgf_hd_criteria, 
+                                    levels = c(0,1), 
+                                    labels = c("Control", "DGF.HD"))
+gene.check = gene.check %>% 
+  mutate(dgf_diff_criteria = as.factor(case_when(
+    dgf_hd_criteria == "DGF.HD" ~ "DGF.HD",
+    dgf_cr_criteria1 == "DGF.Cr" ~ "DGF.Cr",
+    dgf_hd_criteria != "DGF.HD" & dgf_cr_criteria1 != "DGF.Cr" ~ "control")))
+print("Kidney Bulk RNAseq (0m samples)")
+summary(gene.check$dgf_combined1)
+summary(gene.check$dgf_diff_criteria)
+```
+
+### Baseline characteristics 
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+base.char = c()
+base.char = dgf.filter %>% select(dgf_combined1, organ_type, 
+                                  HLA_mm, dsa1_pre, dsa2_pre,
+                                  donor_criteria, donor_gender, 
+                                  donor_age, donor_ionotropes,
+                                  cit_min, donor_terminal_cr, 
+                                  gender, tx_age, age, chol_pre,
+                                  htn_pre, dm_pre, ihd_pre, 
+                                  ondialysis_pretx, renal_dx,
+                                  dgf_cr_criteria, dgf_hd_criteria, 
+                                  graft_age_months, graft_number)
+
+baseline.table = tbl_summary(base.char,  missing = "no", by = dgf_combined1)
+baseline.table1 = baseline.table %>% add_n() %>% 
+  add_p() %>% modify_header(label = "Baseline") %>% bold_labels()
+
+baseline.table.hd = tbl_summary(base.char, missing = "no",by = dgf_hd_criteria)
+baseline.table.hd1 = baseline.table.hd %>% add_n() %>% 
+  add_p() %>% modify_header(label = "Baseline") %>% bold_labels()
+
+types1 = c()
+types1 = dgf.filter %>% select(dgf_combined1, organ_type, donor_criteria, 
+                               dgf_severity,dgf_hd_criteria, dgf_cr_criteria)
+types1.table = tbl_summary(types1, missing = "no",
+                           by = donor_criteria )
+types1.table = types1.table %>% add_p() %>% 
+  modify_header(label = "Baseline") %>% bold_labels()
+
+outcomes = c()
+outcomes = dgf.filter %>% select(dgf_combined1, dgf_hd_criteria,
+                                 event_any, event_all, 
+                                 death, death.cs.graftloss, 
+                                 primary_nonfunc, 
+                                 death_functioninggraft, 
+                                 graft_loss,  censor_followup, 
+                                 dgf_hdsessions,  dgf_hd_days,
+                                 return_OT_01m,  transfusion_01m, 
+                                 wound_infection_01m,
+                                 cr_pre, cr_0hr, cr_d1, 
+                                 cr_d2, cr_1m, cr_3m, 
+                                 cr_12m, cr_24m,cr_36m, 
+                                 cr_48m, cr_60m, cr_72m,  
+                                 cr_84m,cr_96m, egfr_1m, 
+                                 egfr_3m, egfr_12m, egfr_24m, 
+                                 egfr_36m, egfr_48m, egfr_60m, 
+                                 egfr_72m, egfr_84m,  egfr_96m, 
+                                 uacr_1m, uacr_3m, uacr_12m, 
+                                 mgfr_3m, mgfr_12m, tac_d2,
+                                 tac_d7,  tac_d14, tac_d21, 
+                                 tac_1m, tac_3m,  tac_12m, 
+                                 cmv_viremia, cmv_disease, 
+                                 resist_cmv, ebv_infection, 
+                                 bk_viremia, bkvan, 
+                                 fungal_invasive_orblood, 
+                                 recurrent_uti, gasteroenteritis, 
+                                 chest_infection, PTLD, skin_ca, 
+                                 cvd_0_5y, induct_cni, induct_apa, 
+                                 induct_bas, induct_extra, 
+                                 bpar_0_1m, bpar_1m, bpar_1_3m, 
+                                 bpar_3m, bpar_3_12m, bpar_12m, 
+                                 bpar_post12m, Subclin_0_1m, 
+                                 subclin_1m, subclin_1_3m, 
+                                 subclin_3m, subclin_3_12m, 
+                                 subclin_12m,  bkvan_0_1m, 
+                                 bkvan_1m,bk_van_3m, bkvan_3_12m, 
+                                 bk_van_12m, bkvan_post12m, 
+                                 ci_0m, ci_1m, ci_3m, ci_12m, 
+                                 ct_0m, ct_1m, ct_3m, ct_12m, 
+                                 iIFTA_1m, iIFTA_3m, iIFTA_12m)
+
+outcomes = c()
+outcomes = dgf.filter %>% select(dgf_combined1, dgf_hd_criteria,event_any, 
+                                 event_all, death,dgf_severity, 
+                                 dgf_hdsessions, dgf_hd_days)
+
+outcomes.table = tbl_summary(outcomes, missing = "no",
+                             by = dgf_combined1)
+outcomes.table = outcomes.table %>% add_n() %>% 
+  add_p() %>% modify_header(label = "Outcomes") %>% bold_labels()
+
+outcomes.a = tbl_summary(outcomes, missing = "no",
+                         by = dgf_hd_criteria)
+outcomes.a = outcomes.a %>% add_n() %>% add_p() %>% 
+  modify_header(label = "Outcomes") %>% bold_labels()
+
+```
+
+# Focusing on the outcome DGF 
+Simple regression to check for presence and strength of relationship of variables (donor and recipient) to developing DGF (logistic rather than linear model given outcome is categorical). Check variables ok
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# For combined DGF criteria - dgf_combined1
+dependent = "dgf_combined1"
+explantory.recip = c("gender", "htn_pre", "dm_pre", "renal_dx","ihd_pre", "chol_pre" , "ondialysis_pretx", "organ_type")
+explantory.recip.cont = c("tx_yr", "tx_age")
+explantory.donor = c("donor_criteria", "donor_criteria_base", "donor_ionotropes",  "donor_blood_group")
+explantory.donor.cont = c("cit_min", "donor_age", "donor_intubated_days", "donor_terminal_cr")
+explantory.immune = c("hla1_pre","hla2_pre", "dsa1_pre" , "graft_number", "dsa2_pre" ,  "aboi", "induct_extra")
+explantory.immune.cont = c("HLA_mm" )
+explantory.immune1 = explantory.immune[explantory.immune != "aboi"]
+explantory.recip1 = explantory.recip[explantory.recip != "organ_type"]
+
+# EDA - Check via chi-sq or fischer tests
+dgf.filter %>% summary_factorlist(dependent,
+                                  c(explantory.recip, explantory.recip.cont),
+                                  add_dependent_label = TRUE, p = TRUE) 
+
+dgf.filter %>% summary_factorlist(dependent,
+                                  c(explantory.donor,explantory.donor.cont),
+                                  add_dependent_label = TRUE, p = TRUE) 
+
+dgf.filter %>% summary_factorlist(dependent,
+                                  c(explantory.immune,explantory.immune.cont), 
+                                  add_dependent_label = TRUE,  p = TRUE) 
+
+dktx.only %>% summary_factorlist(dependent,
+                                  c(explantory.recip1, explantory.recip.cont),
+                                  add_dependent_label = TRUE, p = TRUE) 
+
+dktx.only %>% summary_factorlist(dependent,
+                                  c(explantory.donor,explantory.donor.cont),
+                                  add_dependent_label = TRUE, p = TRUE) 
+
+dktx.only %>% summary_factorlist(dependent,
+                                  c(explantory.immune1,explantory.immune.cont), 
+                                  add_dependent_label = TRUE,  p = TRUE) 
+
+# Check linearity for DGF predictors
+dgf.filter %>% 
+  select(dgf_combined1, tx_yr, tx_age, donor_age, donor_terminal_cr) %>% 
+  pivot_longer(all_of(c("tx_yr", "tx_age", "donor_age", "donor_terminal_cr")), 
+               names_to = "predictors") %>% 
+  ggplot(aes(x = value, y = dgf_combined1)) + geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + facet_wrap(~predictors, scales = "free_x")
+
+dgf.filter %>% 
+  select(one_of(c("dgf_combined1","gender", "renal_dx", 
+                  "donor_criteria", "graft_number"))) %>% 
+  pivot_longer(-dgf_combined1) %>% 
+  ggplot(aes(value, fill = dgf_combined1)) + 
+  geom_bar(position = "fill") + ylab("proportion") +
+  facet_wrap(~name, scale = "free", ncol = 2) +  coord_flip()
+
+# Check multi-collinearity 
+dgf.filter %>% remove_labels() %>%
+  ggpairs(columns = c(explantory.recip.cont, 
+                      explantory.immune.cont, 
+                      explantory.donor.cont)) 
+
+dktx.only %>% remove_labels() %>%
+  ggpairs(columns = c(explantory.recip.cont, 
+                      explantory.immune.cont, 
+                      explantory.donor.cont)) 
+
+# if variation inflation factor > 10, suspect multi-collinearity
+dgf.filter %>%  glmmulti(dependent, c(explantory.donor.cont, explantory.recip.cont)) %>%car::vif()
+dgf.filter %>% glmmulti(dependent, c(explantory.recip)) %>%car::vif()
+dktx.only %>% glmmulti(dependent, c(explantory.donor.cont, explantory.recip.cont)) %>%car::vif()
+dktx.only %>% glmmulti(dependent, c(explantory.recip1)) %>%car::vif()
+```
+
+Logistic regression using glm() makes it dichotomous outcome if family = binomial, family = gaussian for linear and use multinomial regression for more than 2 levels (control, cr, hd). Use final fit when predictive variables decided on by fwd, backward or collett.
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# For Control vs DGF (combined HD + Cr)
+dependent = "dgf_combined1"
+
+# Look at categorical variables
+fit1 = glm(dgf_combined1 ~ gender  + htn_pre + dm_pre + 
+              renal_dx + ihd_pre + chol_pre + ondialysis_pretx + 
+              organ_type + donor_criteria +
+              donor_ionotropes +  graft_number + 
+              dsa1_pre + dsa2_pre + induct_extra1, 
+             data = dgf.filter, family = binomial)
+fit1 %>% tidy(conf.int = TRUE, exp = TRUE)
+fit1 %>% glance()
+step1 = stepAIC(fit1, scope=list(lower=NULL, upper=fit1),
+                data=dgf.filter, direction='backward')
+step(step1, direction = "backward") # same result
+summary(step1)
+exp(coef(step1))
+step1 %>% tidy(conf.int = TRUE, exp = TRUE)
+
+# Look at numerical variables
+fit2 = glm(dgf_combined1 ~ tx_age + tx_yr +cit_min + 
+              donor_age + donor_intubated_days + 
+              donor_terminal_cr + HLA_mm, 
+            data = dgf.filter, family = binomial)
+fit2 %>% tidy(conf.int = TRUE, exp = TRUE)
+fit2 %>% glance()
+step2 = stepAIC(fit2, scope=list(lower=NULL, upper=fit2), 
+                data=dgf.filter, direction='backward')
+step(step2, direction = "backward") # same result
+summary(step2)
+exp(coef(step2))
+step2 %>% tidy(conf.int = TRUE, exp = TRUE)
+
+# all the numerical and categorical variables together
+fit3 = glm(dgf_combined1 ~ tx_age + tx_yr +cit_min + 
+              donor_age + donor_intubated_days + 
+              donor_terminal_cr + HLA_mm + 
+             gender  + htn_pre + dm_pre + 
+              renal_dx + ihd_pre + chol_pre + ondialysis_pretx + 
+              organ_type + donor_criteria +
+              donor_ionotropes +  graft_number + 
+              dsa1_pre + dsa2_pre + induct_extra1,
+            data = dgf.filter, family = binomial)
+fit3 %>% tidy(conf.int = TRUE, exp = TRUE)
+fit3 %>% glance()
+step3 = stepAIC(fit3, scope=list(lower=NULL, upper=fit3), 
+                data=dgf.filter, direction='backward')
+# step3 = step(fit3, direction = "backward") # same result
+summary(fit3)
+exp(coef(fit3))
+step3 %>% tidy(conf.int = TRUE, exp = TRUE)
+
+# putting this into final fit for publication styling
+exp.var1 =  c("gender", "htn_pre" , "dm_pre" , "renal_dx" , 
+              "ihd_pre" ,  "chol_pre" , "ondialysis_pretx" , 
+              "organ_type" , "donor_criteria", "donor_ionotropes", 
+              "graft_number", "dsa1_pre", "dsa2_pre", "tx_yr",
+              "induct_extra1", "tx_age" , "cit_min" , "donor_age" ,
+              "donor_intubated_days" ,  "donor_terminal_cr" ,"HLA_mm")
+
+exp.var2 =  c("ondialysis_pretx" , "tx_age", "organ_type" ,
+              "cit_min",  "donor_criteria", "donor_ionotropes")
+
+fit4 <- glm(dgf_combined1 ~ tx_age +  donor_terminal_cr +
+              ondialysis_pretx +  organ_type + donor_criteria +
+              donor_ionotropes +cit_min,
+            data = dgf.filter, family = binomial)
+
+fit4= dgf.filter %>% finalfit(dependent, 
+                               exp.var1, 
+                               keep_models = TRUE,metrics = TRUE)
+knitr::kable(fit4[[1]], row.names=FALSE)
+
+fit5 <- glm(dgf_combined1 ~ 
+              tx_age + ondialysis_pretx +  
+              organ_type + donor_criteria +
+              donor_ionotropes +cit_min,
+            data = dgf.filter, family = binomial)
+chisq.test(dgf.filter$dgf_combined1, predict(fit5))
+PseudoR2(fit5, which = c("CoxSnell","Nagelkerke","McFadden"))
+
+fit5 = dgf.filter %>% finalfit(dependent, exp.var2)
+knitr::kable(fit5, row.names=FALSE, 
+             align=c("l", "l", "r", "r", "r", "r"))
+
+# Odds ratio of developing DGF
+dgf.filter %>% or_plot(dependent, exp.var1,
+          breaks = c(0.5, 1, 2, 5, 10, 25),
+          dependent_label = "DGF",
+          table_text_size = 3,
+          title_text_size = 16)
+
+# Adjusted HR for composite death/graft loss - [[[move this to the outcomes section]]]
+dgf.filter %>% hr_plot("Surv(time.in.study, event.main)", 
+          c(explantory.recip, explantory.recip.cont, "dgf_define"), 
+          dependent_label = "Composite",
+          table_text_size = 3)
+
+```
+
+For DGF split > 2 levels = control vs (HD or Cr). Predictor variables same as the dichotomous DGF combined category used earlier, no need to recheck. Use multinomial logistic regression (rather than ordinal)
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+options(show.signif.stars=TRUE)
+######
+multi.1 = multinom(dgf_define ~  tx_age + tx_yr +cit_min + 
+                       donor_age + donor_intubated_days + 
+                       donor_terminal_cr + HLA_mm + 
+                       gender  + htn_pre + dm_pre + 
+                       renal_dx + ihd_pre + chol_pre + 
+                       ondialysis_pretx + organ_type + 
+                       donor_criteria + donor_ionotropes +  
+                       graft_number +  dsa1_pre +  dsa2_pre + 
+                       induct_extra1, data = dgf.filter)
+
+# Check variable elimination
+step.multi.1 = step(multi.1, direction = "backward")
+step.multi.1.check = stepAIC(multi.1, 
+                             scope=list(lower=NULL, upper=multi.1),
+                             data=dgf.filter, direction='backward')
+
+step.multi.1 %>% tidy(conf.int = TRUE, exp = TRUE)
+step.multi.1.check %>% tidy(conf.int = TRUE, exp = TRUE)
+
+# After step wise elimination, the remaining factors were
+multi.2 = multinom(dgf_define ~  tx_yr + donor_intubated_days + 
+                     donor_terminal_cr + dm_pre + chol_pre +
+                     ondialysis_pretx +  donor_criteria + 
+                     donor_ionotropes + dsa1_pre, data = dgf.filter)
+summary(multi.2)
+exp(coef(multi.2))
+
+step.multi.2 = step(multi.2, direction = "backward")
+step.multi.2 = step.multi.2 %>% tidy(conf.int = TRUE, exp = TRUE)
+step.multi.2 = data.frame(step.multi.2[order(step.multi.2$term),])
+
+# Check Z tests
+z  = summary(multi.2)$coefficients/summary(multi.2)$standard.errors
+p.z = (1 - pnorm(abs(z.1), 0, 1)) * 2
+
+# Check goodness of fit
+chisq.test(dgf.filter$dgf_define, predict(multi.2))
+
+# PseudoR-square (mostly use Nagelkerke)
+PseudoR2(multi.2, which = c("CoxSnell","Nagelkerke","McFadden"))
+
+exp.var3 = c("tx_yr", "donor_intubated_days", "donor_terminal_cr", "dm_pre", 
+             "chol_pre", "ondialysis_pretx", "donor_criteria", "donor_ionotropes", "dsa1_pre")
+
+```
+
+# Now looking at clinically important outcomes of death, graft loss and rejection
+
+### EDA/PCA of clinical variables
+gives an idea of some of the important variables which will likely come out
+compare this to gene PCA and which variables they corresond with Glimma
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+pca <- prcomp(dgf.filter, center=TRUE, scale=TRUE)
+eigen(cor(df))$values
+```
+
+
+For other outcomes, check linearity of continous variables
+[FIX] - add post transplant factors as well
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# For composite death + graft loss
+dgf.filter %>% 
+  select(event.main, tx_yr, tx_age, donor_age, donor_terminal_cr) %>% 
+  pivot_longer(all_of(c("tx_yr", "tx_age", "donor_age", "donor_terminal_cr")), 
+               names_to = "predictors") %>% 
+  ggplot(aes(x = value, y = event.main)) + 
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~predictors, scales = "free_x")
+
+# For non-censored graft loss
+dgf.filter %>% 
+  select(graft.loss.noncensored, tx_yr, tx_age, donor_age, donor_terminal_cr) %>% 
+  pivot_longer(all_of(c("tx_yr", "tx_age", "donor_age", "donor_terminal_cr")), 
+               names_to = "predictors") %>% 
+  ggplot(aes(x = value, y = graft.loss.noncensored)) + 
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~predictors, scales = "free_x")
+
+# For BPAR and subclin
+dgf.filter %>% 
+  select(bpar_any1, tx_yr, tx_age, donor_age, donor_terminal_cr) %>% 
+  pivot_longer(all_of(c("tx_yr", "tx_age", "donor_age", "donor_terminal_cr")), 
+               names_to = "predictors") %>% 
+  ggplot(aes(x = value, y = bpar_any1)) + 
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~predictors, scales = "free_x")
+
+# For non-censored graft loss
+dgf.filter %>% 
+  select(subclin_any1, tx_yr, tx_age, donor_age, donor_terminal_cr) %>% 
+  pivot_longer(all_of(c("tx_yr", "tx_age", "donor_age", "donor_terminal_cr")), 
+               names_to = "predictors") %>% 
+  ggplot(aes(x = value, y = subclin_any1)) + 
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~predictors, scales = "free_x")
+
+```
+
+### Survival curves for EDA
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+p.surv = function(surv.1, legend.labs, palette, title){
+  p.surv = ggsurvplot(surv.1, pval = TRUE, conf.int = FALSE, 
+                   palette = palette, legend = "right",
+                   legend.labs = legend.labs,
+                   title = title,
+                   ylab = "Event-free survival",  
+                   xlab = "Time (months)",
+                   xlim = c(0,60), ylim = c(0, 1), 
+                   break.x.by=6,risk.table.col = "strata",  
+                   linetype = "strata",   fontsize= 4,
+                   risk.table = TRUE, risk.table.height = 0.3,
+                   tables.theme = clean_table_theme(),
+                   ggtheme = theme_classic())}
+```
+
+KM: composite of death + graft loss for DGF combined criteria
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Composite outcomes - combined criteria
+composite.events1 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                           event = dgf.filter$event.main) 
+                                      ~ dgf_combined1, data = dgf.filter)
+p.comp = p.surv(composite.events1, c("Control", "DGF"), "npg", 
+                "DGF criteria vs composite of death and graft loss")
+
+# Composite outcomes - combined criteria,  deceased donor KTx only
+composite.events2 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                           event = dktx.only$event.main) 
+                                      ~ dgf_combined1, data = dktx.only)
+p.comp1 = p.surv(composite.events2, c("Control", "DGF"), "npg", 
+                "DGF vs composite outcomes (deceased donor KTx)")
+
+# non censored graft loss, combined criteria
+composite.events3 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                           event = dgf.filter$graft.loss.noncensored) 
+                                      ~ dgf_combined1, data = dgf.filter)
+p.comp.hd = p.surv(composite.events3, c("Control", "DGF"), "npg", 
+                "DGF vs non-censored graft loss")
+  
+# non censored graft loss, combined criteria, deceased KTx only
+composite.events4 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                           event = dktx.only$graft.loss.noncensored) 
+                                      ~ dgf_combined1, data = dktx.only)
+p.comp.hd1 =  p.surv(composite.events4, c("Control", "DGF"), "npg", 
+                "DGF vs non-censored graft loss (deceased donor KTx)")
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.combined.criteria.tiff", units = "cm", res = 300, height = 28, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'DGF (HD and Cr criteria combined) vs death and/or graft loss')
+dev.off()
+
+```
+
+KM: composite death + graft loss for 3 DGF stratification
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Composite events of graft loss + death (any)
+composite.events5 = survival::survfit(Surv(time = dgf.filter$time.in.study,
+                                           event = dgf.filter$event.main) 
+                                      ~ dgf_define, data = dgf.filter)
+p.comp = p.surv(composite.events5, c("Control", "DGF(Cr)", "DGF(HD)"), 
+                c("#DC0000FF", "#00A087FF", "#4DBBD5FF"),  
+                "DGF criteria vs composite of death and graft loss")
+
+# combined criteria
+composite.events6 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                    event = dgf.filter$event.main) 
+                               ~ dgf_combined, data = dgf.filter)
+p.comp1 = p.surv(composite.events6,  c("Control", "DGF(HD+Cr)"), "npg",  
+                "DGF combined vs composite of death and graft loss")
+
+# HD criteria
+composite.events7 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$event.main) 
+                                 ~ dgf_hd_criteria, data = dgf.filter)
+p.comp.hd = p.surv(composite.events7,  c("Control", "DGF(HD)"), "npg",  
+                "DGF (HD) vs composite of death and graft loss")
+
+# HD criteria, deceased donor ktx only
+composite.events8 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$event.main) 
+                                 ~ dgf_hd_criteria, data = dktx.only)
+p.comp.dktx = p.surv(composite.events8,  c("Control", "DGF(HD)"), "npg",  
+               "Deceased donor KTx vs composite of death and graft loss")
+
+# put together
+p.temp1 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp2 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.dktx$plot/p.comp.dktx$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.tiff", units = "cm", res = 300, height = 25, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)
+dev.off()
+
+# strata by organ type
+composite.events9 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                  event = dgf.filter$event.main) 
+                             ~ dgf.filter$organ_type, data = dgf.filter)
+p.a  = p.surv(composite.events9,  c("KTx", "Living KTx", "SPK"), "npg",  
+              "Tx organ vs composite of death and graft loss")
+
+# strata by donor criteria
+composite.events10 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                  event = dgf.filter$event.main) 
+                             ~ dgf.filter$donor_criteria, data = dgf.filter)
+p.b  = p.surv(composite.events10,  c("DBD", "DBD + ECD", "DCD", "DCD + ECD", "LKD"), 
+              "npg","Donor criteria vs composite of death and graft loss")
+
+tiff("figures/km.composite.donor.tiff", units = "cm", res = 300, height = 20, width = 40)
+(p.a$plot/p.a$table+ plot_layout(height = c(3,1))) - (p.b$plot/p.b$table + plot_layout(height = c(3,1))) + 
+  plot_annotation(title = 'DGF by Cr vs HD criteria vs death and/or graft loss')
+dev.off()
+
+```
+
+KM: composite death + graft loss for DGF adjusting for any rejection (reference Gill KI 2016 on risks of DGF)
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Accounting for BPAR for combined criteria
+composite.events11 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_combined1+bpar_any, data = dgf.filter)
+p.comp  = p.surv(composite.events11,  
+                 c("Control", "DGF- BPAR+", "DGF, BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD+Cr) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events12 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_combined1 + bpar_any, data = dktx.only)
+p.comp1  = p.surv(composite.events12,  
+                 c("Control", "DGF- BPAR+", "DGF, BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD+Cr) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events13 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ bpar_any, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events13,  
+                 c("Control", "DGF- BPAR+", "DGF, BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD+Cr) vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events14 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ bpar_any, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events14,  
+                 c("Control", "DGF- BPAR+", "DGF, BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD+Cr) vs non-censored graft loss (deceased donor KTx)")
+
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.combined.criteria.wBPAR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'DGF (HD and Cr criteria combined) adjusted for BPAR (at any time)')
+dev.off()
+
+# Accounting for subclin Rejection for combined criteria
+composite.events15 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_combined1+subclin_any, data = dgf.filter)
+p.comp  = p.surv(composite.events15,  
+                 c("Control", "DGF- SubR+", "DGF, SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD+Cr) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events16 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_combined1 + subclin_any, data = dktx.only)
+p.comp1  = p.surv(composite.events16,  
+                 c("Control", "DGF- SubR+", "DGF, SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD+Cr) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events17 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ subclin_any, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events17,  
+                 c("Control", "DGF- SubR+", "DGF, SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD+Cr) vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events18 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ subclin_any, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events18,  
+                 c("Control", "DGF- SubR+", "DGF, SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD+Cr) vs non-censored graft loss (deceased donor KTx)")
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.combined.criteria.wSubClinR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)+ plot_annotation(title = 'DGF (HD and Cr criteria combined) adjusted for subclin rejection (any time)')
+dev.off()
+
+#################### DGF : HD only criteria
+# Accounting for BPAR for combined criteria
+composite.events19 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_hd_criteria+bpar_any, data = dgf.filter)
+p.comp  = p.surv(composite.events19,  
+                 c("Control", "DGF- BPAR+", "DGF+ BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events20 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_hd_criteria + bpar_any, data = dktx.only)
+p.comp1  = p.surv(composite.events20,  
+                 c("Control", "DGF- BPAR+", "DGF+ BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events21 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ bpar_any, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events21,  
+                 c("Control", "DGF- BPAR+", "DGF+ BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD)vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events22 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ bpar_any, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events22,  
+                 c("Control", "DGF- BPAR+", "DGF+ BPAR-", "DGF+ BPAR+"), "npg",
+                 "DGF (HD) vs non-censored graft loss (deceased donor KTx)")
+
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.HD.criteria.wBPAR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)+ plot_annotation(title = 'DGF (HD only) adjusted for BPAR (anytime)')
+dev.off()
+
+# Accounting for subclin Rejection for combined criteria
+composite.events23 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_hd_criteria+subclin_any, data = dgf.filter)
+p.comp  = p.surv(composite.events23,  
+                 c("Control", "DGF- SubR+", "DGF+ SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events24 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_hd_criteria + subclin_any, data = dktx.only)
+p.comp1  = p.surv(composite.events24,  
+                 c("Control", "DGF- SubR+", "DGF+ SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events25 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ subclin_any, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events25,  
+                 c("Control", "DGF- SubR+", "DGF+ SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD) vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events26 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ subclin_any, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events26,  
+                 c("Control", "DGF- SubR+", "DGF+ SubR-", "DGF+ SubR+"), "npg",
+                 "DGF (HD) vs non-censored graft loss (deceased donor KTx)")
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.HD.criteria.wSubClinR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)+ plot_annotation(title = 'DGF (HD only) adjusted for Subclin rejection (anytime)')
+dev.off()
+
+######## For DGF levels = control, Cr, HD vs rejection
+# Accounting for BPAR for 
+composite.events27 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_define +bpar_any, data = dgf.filter)
+p.comp  = p.surv(composite.events27, 
+                 c("Control", "DGF- BPAR+", "Cr+ BPAR-", "Cr+ BPAR+", "HD+ BPAR-", "HD+ BPAR+"), 
+                 "npg", "DGF vs composite of death and graft loss")
+
+composite.events28 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$graft.loss.noncensored) 
+                             ~ dgf_define + bpar_any, data = dgf.filter)
+p.comp1  = p.surv(composite.events28,  
+                 c("Control", "DGF- BPAR+", "Cr+ BPAR-", "Cr+ BPAR+", "HD+ BPAR-", "HD+ BPAR+"), 
+                 "npg", "DGF vs non-censored graft loss")
+
+composite.events29 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$event.main) 
+                             ~ dgf_define + subclin_any, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events29,  
+                  c("Control", "DGF- SubR+", "Cr+ SubR-",  "Cr+ SubR+", "HD+ SubR-", "HD+ SubR+"), 
+                  "npg","DGF vs composite outcome")
+
+composite.events30 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$graft.loss.noncensored) 
+                             ~ dgf_define + subclin_any, data = dgf.filter)
+p.comp.hd1  = p.surv(composite.events30,  
+                  c("Control", "DGF- SubR+", "Cr+ SubR-",  "Cr+ SubR+", "HD+ SubR-", "HD+ SubR+"),   
+                  "npg", "DGF vs non-censored graft loss ")
+
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.C.Cr.HD.wRejection.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'DGF by Cr vs HD criteria adjusted for rejection (anytime)')
+dev.off()
+
+```
+
+KM: composite death + graft loss for DGF adjusting for EARLY rejection (reference Gill KI 2016 on risks of DGF)
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# add in variable early rejection (up to and including 1m)
+dgf.filter = dgf.filter %>% 
+  mutate(bpar.early = case_when(bpar_0_1m == "No BPAR" & bpar_1m == "No BPAR" ~ "No BPAR",
+                                bpar_0_1m != "No BPAR" | bpar_1m != "No BPAR" ~ "Early BPAR"))
+
+dgf.filter = dgf.filter %>% 
+  mutate(subclin.early = case_when(Subclin_0_1m == "No Subclin" & subclin_1m == "No Subclin" ~ "No Subclin",
+                                Subclin_0_1m != "No Subclin" | subclin_1m != "No Subclin" ~ "Early Subclin"))
+dgf.filter$subclin.early = ifelse(is.na(dgf.filter$subclin.early), "No Subclin", dgf.filter$subclin.early)
+
+dktx.only = dgf.filter[dgf.filter$organ_type == "Kidney Transplant",]
+
+# Accounting for BPAR for combined criteria
+composite.events31 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_combined1+bpar.early, data = dgf.filter)
+p.comp  = p.surv(composite.events31,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg", "DGF (HD+Cr) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events32 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_combined1 + bpar.early, data = dktx.only)
+p.comp1  = p.surv(composite.events32,  
+                c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                "npg", "DGF (HD+Cr) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events33 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ bpar.early, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events33,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg",  "DGF (HD+Cr) vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events34 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ bpar.early, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events34,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg", "DGF (HD+Cr) vs non-censored graft loss (deceased donor KTx)")
+
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.combined.criteria.early.BPAR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'DGF (Cr and HD) adjusted for early BPAR')
+dev.off()
+
+# Accounting for subclin Rejection for combined criteria
+composite.events35 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_combined1+subclin.early, data = dgf.filter)
+p.comp  = p.surv(composite.events35,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg", "DGF (HD+Cr) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events36 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_combined1 + subclin.early, data = dktx.only)
+p.comp1  = p.surv(composite.events36,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg", "DGF (HD+Cr) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events37 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ subclin.early, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events37,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg", "DGF (HD+Cr)  vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events38 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_combined1+ subclin.early, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events38,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg","DGF (HD+Cr) vs non-censored graft loss (deceased donor KTx)")
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.combined.criteria.early.SubClinR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)+ plot_annotation(title = 'DGF (Cr and HD) adjusted for early subclinical rejection')
+dev.off()
+
+#################### DGF : HD only criteria
+# Accounting for BPAR for combined criteria
+composite.events39 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_hd_criteria+ bpar.early, data = dgf.filter)
+p.comp  = p.surv(composite.events39,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg","DGF (HD) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events40 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_hd_criteria + bpar.early, data = dktx.only)
+p.comp1  = p.surv(composite.events40,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg", "DGF (HD) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events41 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ bpar.early, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events41,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg", "DGF (HD)vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events42 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ bpar.early, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events42,  
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "DGF+ eBPAR+", "DGF+ eBPAR-"), 
+                 "npg", "DGF (HD) vs non-censored graft loss (deceased donor KTx)")
+
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.HD.criteria.early.BPAR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)+ plot_annotation(title = 'DGF (HD) adjusted for early BPAR')
+dev.off()
+
+# Accounting for subclin Rejection for combined criteria
+composite.events43 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_hd_criteria+subclin_any, data = dgf.filter)
+p.comp  = p.surv(composite.events43,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"),  
+                 "npg","DGF (HD) vs composite of death and graft loss")
+
+# DGF+ BPAR for deceased donor KTx
+composite.events44 = survival::survfit(Surv(time = dktx.only$time.in.study,   
+                                  event = dktx.only$event.main) 
+                             ~ dgf_hd_criteria + subclin_any, data = dktx.only)
+p.comp1  = p.surv(composite.events43,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg", "DGF (HD) vs composite outcomes (deceased donor KTx)")
+
+# DGF+ BPAR - non censored graft loss
+composite.events45 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ subclin_any, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events45,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg","DGF (HD) vs non-censored graft loss")
+
+# DGF+ BPAR - non censored graft loss (Ktx only)
+composite.events46 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria+ subclin_any, data = dktx.only)
+p.comp.hd1  = p.surv(composite.events46,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "DGF+ eSubR+", "DGF+ eSubR-"), 
+                 "npg", "DGF (HD) vs non-censored graft loss (deceased donor KTx)")
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.HD.criteria.early.SubClinR.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'DGF (HD) adjusted for early subclinical rejection')
+dev.off()
+
+######## For DGF levels = control, Cr, HD vs rejection
+# Accounting for BPAR for 
+composite.events47 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                              event = dgf.filter$event.main) 
+                                          ~ dgf_define + bpar.early, data = dgf.filter)
+p.comp  = p.surv(composite.events47, 
+                 c("DGF- eBPAR+", "DGF- eBPAR-", "Cr+ eBPAR+", "Cr+ eBPAR-", "HD+ eBPAR+", "HD+ eBPAR-"), 
+                 "npg", "DGF vs composite of death and graft loss")
+
+composite.events48 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$graft.loss.noncensored) 
+                             ~ dgf_define + bpar.early, data = dgf.filter)
+p.comp1  = p.surv(composite.events48,  
+                c("DGF- eBPAR+", "DGF- eBPAR-", "Cr+ eBPAR+", "Cr+ eBPAR-", "HD+ eBPAR+", "HD+ eBPAR-"), 
+                 "npg", "DGF vs non-censored graft loss")
+
+composite.events49 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$event.main) 
+                             ~ dgf_define + subclin.early, data = dgf.filter)
+p.comp.hd  = p.surv(composite.events49,  
+                 c("DGF- eSubR+", "DGF- eSubR-", "Cr+ eSubR+", "Cr+ eSubR-", "HD+ eSubR+", "HD+ eSubR-"), 
+                  "npg","DGF vs composite outcome")
+
+composite.events50 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$graft.loss.noncensored) 
+                             ~ dgf_define + subclin.early, data = dgf.filter)
+p.comp.hd1  = p.surv(composite.events50,  
+                  c("DGF- eSubR+", "DGF- eSubR-", "Cr+ eSubR+", "Cr+ eSubR-", "HD+ eSubR+", "HD+ eSubR-"),
+                  "npg", "DGF vs non-censored graft loss ")
+
+
+# put together
+p.temp1 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp2 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.hd1$plot/p.comp.hd1$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.composite.C.Cr.HD.early.Rejection.tiff", units = "cm", res = 300, height = 30, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'DGF by Cr vs HD criteria adjusted for early rejection')
+dev.off()
+
+```
+
+KM: non-censored graft loss
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+events.a1 = survival::survfit(Surv(time = dgf.filter$time.in.study,   
+                                  event = dgf.filter$graft.loss.noncensored) 
+                             ~ dgf_define, data = dgf.filter)
+p.comp  = p.surv(events.a1,  
+                 c("Control", "DGF(Cr)", "DGF(HD)"), 
+                 c("#DC0000FF", "#00A087FF", "#4DBBD5FF"),
+                 "DGF criteria vs non-censored graft loss")
+
+events.a2 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                    event = dgf.filter$graft.loss.noncensored) 
+                               ~ dgf_combined, data = dgf.filter)
+p.comp1  = p.surv(events.a2,  
+                 c("Control", "DGF(HD+Cr)"),  "npg",
+                 "DGF combined vs non-censored graft loss")
+
+events.a3 = survival::survfit(Surv(time = dgf.filter$time.in.study, 
+                                      event = dgf.filter$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria, data = dgf.filter)
+p.comp.hd  = p.surv(events.a3,  
+                 c("Control", "DGF(HD)"),  "npg",
+                "DGF (HD) vs non-censored graft loss")
+
+events.a4 = survival::survfit(Surv(time = dktx.only$time.in.study, 
+                                      event = dktx.only$graft.loss.noncensored) 
+                                 ~ dgf_hd_criteria, data = dktx.only)
+p.comp.hd  = p.surv(events.a4,  
+                 c("Control", "DGF(HD)"),  "npg",
+                "Deceased donor KTx vs non-censored graft loss")
+
+p.temp1 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp2 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.dktx$plot/p.comp.dktx$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.graftloss.non.censored.tiff", units = "cm", res = 300, height = 25, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4) + plot_annotation(title = 'Graft loss (non censored)')
+dev.off()
+
+```
+
+KM: BPAR
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Composite events of graft loss + death (any)
+events.a5 = survival::survfit(Surv(time = dgf.filter$bpar.time,   
+                                  event = dgf.filter$bpar_any) 
+                             ~ dgf_define, data = dgf.filter)
+p.comp  = p.surv(events.a5,  c("Control", "DGF(Cr)", "DGF(HD)"),  
+                  "npg", "DGF criteria vs BPAR")
+
+# combined criteria
+events.a6 = survival::survfit(Surv(time = dgf.filter$bpar.time, 
+                                    event = dgf.filter$bpar_any) 
+                               ~ dgf_combined, data = dgf.filter)
+p.comp1  = p.surv(events.a6,  c("Control", "DGF(HD+Cr)"),  
+                  "npg", "DGF (HD+Cr) vs BPAR")
+
+# HD criteria
+events.a7 = survival::survfit(Surv(time = dgf.filter$bpar.time, 
+                                      event = dgf.filter$bpar_any) 
+                                 ~ dgf_hd_criteria, data = dgf.filter)
+p.comp.hd  = p.surv(events.a7,  c("Control", "DGF(HD)"),  
+                  "npg", "DGF (HD) criteria vs BPAR")
+
+# HD criteria, deceased donor ktx only
+events.a8 = survival::survfit(Surv(time = dktx.only$bpar.time, 
+                                      event = dktx.only$bpar_any) 
+                                 ~ dgf_define, data = dktx.only)
+p.comp.hd  = p.surv(events.a8,  c("Control",  "DGF(Cr)", "DGF(HD)"),  
+                  "npg", "Deceased donor KTx vs BPAR")
+
+# put together
+p.temp1 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp2 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp3 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.dktx$plot/p.comp.dktx$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.bpar.tiff", units = "cm", res = 300, height = 25, width = 40)
+(p.temp1 - p.temp2)/(p.temp4 -p.temp3)+ plot_annotation(title = 'BPAR')
+dev.off()
+
+# strata by organ type
+events.a9 = survival::survfit(Surv(time = dgf.filter$bpar.time, 
+                                  event = dgf.filter$bpar_any) 
+                             ~ dgf.filter$organ_type, data = dgf.filter)
+p.a  = p.surv(events.a9,  c("KTx", "Living KTx", "SPK"),  
+                  "npg", "Tx organ vs BPAR")
+
+events.a10 = survival::survfit(Surv(time = dgf.filter$bpar.time, 
+                                  event = dgf.filter$bpar_any) 
+                             ~ dgf.filter$donor_criteria, data = dgf.filter)
+p.b  = p.surv(events.a10,  c("DBD", "DBD + ECD", "DCD", "DCD + ECD", "LKD"),  
+                  "npg", "Donor criteria vs BPAR")
+
+tiff("figures/km.bpar.other.tiff", units = "cm", res = 300, height = 20, width = 40)
+(p.a$plot/p.a$table+ plot_layout(height = c(3,1))) - (p.b$plot/p.b$table + plot_layout(height = c(3,1))) + plot_annotation(title = 'BPAR')
+dev.off()
+```
+
+KM: Subclin rejection
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Composite events of graft loss + death (any)
+events.a11 = survival::survfit(Surv(time = dgf.filter$subclin.time,   
+                                  event = dgf.filter$subclin_any) 
+                             ~ dgf_define, data = dgf.filter)
+p.comp  = p.surv(events.a11,  c("Control", "DGF(Cr)", "DGF(HD)"),  
+                  c("#DC0000FF", "#00A087FF", "#4DBBD5FF"), 
+                 "DGF criteria vs Subclinical rejection")
+
+# combined criteria
+events.a12 = survival::survfit(Surv(time = dgf.filter$subclin.time, 
+                                    event = dgf.filter$subclin_any) 
+                               ~ dgf_combined, data = dgf.filter)
+p.comp1  = p.surv(events.a12,  c("Control", "DGF(HD+Cr)"),  
+                  "npg", "DGF criteria vs Subclinical rejection")
+
+# HD criteria
+events.a13 = survival::survfit(Surv(time = dgf.filter$subclin.time, 
+                                      event = dgf.filter$subclin_any) 
+                                 ~ dgf_hd_criteria, data = dgf.filter)
+p.comp.hd  = p.surv(events.a13,  c("Control", "DGF(HD)"),  
+                  "npg", "DGF (HD) criteria vs Subclinical rejection")
+
+# HD criteria, deceased donor ktx only
+events.a14 = survival::survfit(Surv(time = dktx.only$subclin.time, 
+                                      event = dktx.only$subclin_any) 
+                                 ~ dgf_define, data = dktx.only)
+p.comp.hd  = p.surv(events.a14,  c("Control",  "DGF(Cr)", "DGF(HD)"),  
+                  "npg", "Deceased donor KTx vs Subclinical rejection")
+
+# put together
+p.temp1 = p.comp1$plot/p.comp1$table + plot_layout(height = c(4,1))
+p.temp2 = p.comp$plot/p.comp$table + plot_layout(height = c(3.5,1))
+p.temp3 = p.comp.hd$plot/p.comp.hd$table + plot_layout(height = c(3.5,1))
+p.temp4 = p.comp.dktx$plot/p.comp.dktx$table+ plot_layout(height = c(4,1))
+
+tiff("figures/km.subclin.tiff", units = "cm", res = 300, height = 25, width = 40)
+(p.temp1 - p.temp2)/(p.temp3 -p.temp4)+ plot_annotation(title = 'Subclinical Rejection')
+dev.off()
+
+# strata by organ type
+events.a15 = survival::survfit(Surv(time = dgf.filter$subclin.time, 
+                                  event = dgf.filter$subclin_any) 
+                             ~ dgf.filter$organ_type, data = dgf.filter)
+p.a  = p.surv(events.a15,  c("KTx", "Living KTx", "SPK"),  
+                  "npg", "Tx organ vs Subclinical rejection")
+
+events.a16 = survival::survfit(Surv(time = dgf.filter$subclin.time, 
+                                  event = dgf.filter$subclin_any) 
+                             ~ dgf.filter$donor_criteria, data = dgf.filter)
+p.b  = p.surv(events.a16,  c("DBD", "DBD + ECD", "DCD", "DCD + ECD", "LKD"),  
+                  "npg", "Donor criteria vs Subclinical rejection")
+
+tiff("figures/km.subclin.other.tiff", units = "cm", res = 300, height = 20, width = 40)
+(p.a$plot/p.a$table+ plot_layout(height = c(3,1))) - (p.b$plot/p.b$table + plot_layout(height = c(3,1)))+ plot_annotation(title = 'Subclinical Rejection')
+dev.off()
+```
+
+KM: DGF severity vs outcomes
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# Look further with DGF severity
+dktx.only = dktx.only %>% 
+  mutate(HD.severity = case_when(dgf_hd_days == 0 ~ "control",
+                                 dgf_hd_days < 7 ~ "mild",
+                                 dgf_hd_days >= 7 ~ "severe"))
+
+events.b1 = survival::survfit(Surv(time = as.numeric(dktx.only$subclin.time),
+                               event = as.numeric(dktx.only$subclin_any)) 
+                          ~ HD.severity, data = dktx.only)
+p5.subclin  = p.surv(events.b1,  c("Control", "mild (<7d)", "severe (>=7d)"),  
+                  "npg", "DGF(HD) severity vs subclinical rejection")
+
+events.b2 = survival::survfit(Surv(time = as.numeric(dktx.only$time.in.study),
+                               event = as.numeric(dktx.only$event.main)) 
+                          ~ HD.severity, data = dktx.only)
+p5.composite  = p.surv(events.b2,  c("Control", "mild (<7d)", "severe (>=7d)"),  
+                  "npg", "DGF(HD) severity vs composite of death, graft loss")
+
+events.b3 = survival::survfit(Surv(time = as.numeric(dktx.only$time.in.study),
+                               event = as.numeric(dktx.only$graft.loss.noncensored)) 
+                          ~ HD.severity, data = dktx.only)
+p5.graftloss  = p.surv(events.b3,  c("Control", "mild (<7d)", "severe (>=7d)"),  
+                  "npg", "DGF(HD) severity vs non-censored graft loss")
+
+events.b4 = survival::survfit(Surv(time = as.numeric(dktx.only$bpar.time),
+                               event = as.numeric(dktx.only$bpar_any)) 
+                          ~ HD.severity, data = dktx.only)
+p5.bpar  = p.surv(events.b4,  c("Control", "mild (<7d)", "severe (>=7d)"),  
+                  "npg", "DGF(HD) severity vs BPAR")
+
+
+p.5 = p5.subclin$plot/p5.subclin$table + plot_layout(height = c(4,1))
+p.5c = p5.composite$plot/p5.composite$table + plot_layout(height = c(4,1))
+p.5g = p5.graftloss$plot/p5.graftloss$table + plot_layout(height = c(4,1))
+p.5b = p5.bpar$plot/p5.bpar$table + plot_layout(height = c(4,1))
+
+tiff("figures/km.outcomes.HDdays.tiff", units = "cm", res = 300, height = 25, width = 35)
+(p.5c-p.5g)/(p.5b-p.5) + plot_annotation(title = 'DGF severity - dialysis days')
+dev.off()
+
+# include creatine drops - day 1 features
+events.b5 = survival:: survfit(Surv(time = as.numeric(dktx.only$time.in.study),
+                               event = as.numeric(dktx.only$event.main)) 
+                          ~ d1.drop, data = dktx.only)
+p6  = p.surv(events.b5,  c("Control", "d1.drop<10pc", "d1.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d1) vs composite outcomes (death, graft loss)")
+
+events.b6 = survival:: survfit(Surv(time = as.numeric(dktx.only$time.in.study),
+                               event = as.numeric(dktx.only$graft.loss.noncensored)) 
+                          ~ d1.drop, data = dktx.only)
+p6.graft  = p.surv(events.b6,  c("Control", "d1.drop<10pc", "d1.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d1) vs non-censored graft loss")
+
+events.b7 = survival:: survfit(Surv(time = as.numeric(dktx.only$bpar.time),
+                               event = as.numeric(dktx.only$bpar_any)) 
+                          ~ d1.drop, data = dktx.only)
+p6.bpar  = p.surv(events.b7,  c("Control", "d1.drop<10pc", "d1.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d1) vs BPAR")
+
+events.b8 = survival:: survfit(Surv(time = as.numeric(dktx.only$subclin.time),
+                               event = as.numeric(dktx.only$subclin_any)) 
+                          ~ d1.drop, data = dktx.only)
+p6.subclin  = p.surv(events.b8,  c("Control", "d1.drop<10pc", "d1.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d1) vs Subclinical rejection")
+
+p.6 = p6$plot/p6$table + plot_layout(height = c(4,1))
+p.6g = p6.graft$plot/p6.graft$table + plot_layout(height = c(4,1))
+p.6b = p6.bpar$plot/p6.bpar$table + plot_layout(height = c(4,1))
+p.6s = p6.subclin$plot/p6.subclin$table + plot_layout(height = c(4,1))
+
+tiff("figures/km.outcomes.dgf.d1.severity.tiff", units = "cm", res = 300, height = 25, width = 35)
+(p.6-p.6g)/(p.6b-p.6s)+ plot_annotation(title = 'DGF severity - day 1 changes')
+dev.off()
+
+# Day 2 features
+events.b9 = survival:: survfit(Surv(time = as.numeric(dktx.only$time.in.study),
+                               event = as.numeric(dktx.only$event.main)) 
+                          ~ d2.drop, data = dktx.only)
+p7  = p.surv(events.b9,  c("Control", "d2.drop<10pc", "d2.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d2) vs composite outcomes (death, graft loss)")
+
+events.b10 = survival:: survfit(Surv(time = as.numeric(dktx.only$time.in.study),
+                               event = as.numeric(dktx.only$graft.loss.noncensored)) 
+                          ~ d2.drop, data = dktx.only)
+p7.graft  = p.surv(events.b10,  c("Control", "d2.drop<10pc", "d2.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d2) vs non-censored graft loss")
+
+events.b11 = survival:: survfit(Surv(time = as.numeric(dktx.only$bpar.time),
+                               event = as.numeric(dktx.only$bpar_any)) 
+                          ~ d2.drop, data = dktx.only)
+p7.bpar  = p.surv(events.b11,  c("Control", "d2.drop<10pc", "d2.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d2) vs BPAR")
+
+events.b12 = survival:: survfit(Surv(time = as.numeric(dktx.only$subclin.time),
+                               event = as.numeric(dktx.only$subclin_any)) 
+                          ~ d2.drop, data = dktx.only)
+p7.subclin  = p.surv(events.b12, c("Control", "d2.drop<10pc", "d2.drop:10-20pc", "HD"),  
+                  "npg", "DGF severity (d2) vs Subclinical rejection")
+
+p.7 = p7$plot/p7$table + plot_layout(height = c(4,1))
+p.7g = p7.graft$plot/p7.graft$table + plot_layout(height = c(4,1))
+p.7b = p7.bpar$plot/p7.bpar$table + plot_layout(height = c(4,1))
+p.7s = p7.subclin$plot/p7.subclin$table + plot_layout(height = c(4,1))
+
+tiff("figures/km.outcomes.dgf.d2.severity.tiff", units = "cm", res = 300, height = 25, width = 35)
+(p.7-p.7g)/(p.7b-p.7s)+ plot_annotation(title = 'DGF severity - day 2 changes')
+dev.off()
+```
+
+### Risks for outcomes of interest - use cox proportional hazards
+1. Clinical outcomes
+2. Biopsy/histological outcomes
+
+AR, acute rejection; DGF, delayed graft function; HR, hazard ratio.
+aCalculated from separate multivariate Cox proportional hazard regression models.
+These models included adjustment for the following recipient and transplant factors:
+recipient age, sex, race, cause of end-stage renal disease, body mass index, duration
+of dialysis prior to transplantation, repeat transplantation, cold ischemic time, hu-
+man leukocyte antigen mismatch, peak panel reactive antibody level, use of in-
+duction immunotherapy and maintenance immunosuppression at the time of
+discharge, and use or nonuse of machine perfusion.
+bInteraction for DGF and AR with the outcome of graft loss from any cause and
+death-censored graft loss was <0.001 and 0.039, respectively
+
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+HR.table = coxph(Surv(dgf.filter$bpar_any) ~ 
+                     dgf.filter$donor_criteria + dgf.filter$dgf_combined1 + dgf.filter$dgf_severity, 
+                   data = dgf.filter) %>% tbl_regression(exponentiate = TRUE)
+
+HR.table1 = coxph(Surv(dgf.filter$subclin_any) ~ 
+                     dgf.filter$donor_criteria + dgf.filter$dgf_combined1+ dgf.filter$dgf_severity, 
+                   data = dgf.filter) %>% tbl_regression(exponentiate = TRUE)
+
+HR.table2 = coxph(Surv(ifelse(dgf.filter$graft_loss == "Functioning graft", 0, 1)) ~ 
+                     dgf.filter$donor_criteria + dgf.filter$dgf_combined1 + dgf.filter$dgf_severity, 
+                   data = dgf.filter) %>% tbl_regression(exponentiate = TRUE)
+
+dgf.filter$death.cs.graftloss1 = ifelse(is.na(dgf.filter$death.cs.graftloss), "no",
+                                        dgf.filter$death.cs.graftloss)
+HR.table3 = coxph(Surv(ifelse(dgf.filter$death.cs.graftloss1 == "no", 0,1)) ~ 
+                     dgf.filter$donor_criteria + dgf.filter$dgf_combined1 + dgf.filter$dgf_severity, 
+                   data = dgf.filter) %>% tbl_regression(exponentiate = TRUE)
+
+```
+
+# Basic plots
+```{r, echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+# fix up and add more again
+
+
+   # simple plots 
+    ggplot(dgf.filter, aes(x=dgf_define, y=tx_age, fill=dgf_define)) +
+      geom_boxplot(alpha=0.3) +theme_bw()+
+      theme(legend.position="none")+ 
+      ggtitle("DGF vs Recipient Age")+
+      xlab("Groups")+
+      ylab("Recipient age (years)")
+ 
+    ggplot(dgf.filter, aes(x=donor_criteria, y=cr_1m, fill=dgf_define)) +
+      geom_boxplot(alpha=0.3) +
+      theme_bw(base_size=10) + theme(legend.position="none")+ 
+      xlab("Groups")+ ylab("SCr (umol/L)") + ggtitle("SCr (1m)")
+
+```
+
+```{r,  echo=FALSE, results = FALSE, warning = FALSE, eval = FALSE}
+##########################
+# NEUTROPHILS 
+##########################
+neut.dgf = c()
+neut.dgf = dgf.filter %>% select(dgf_combined1, dgf_define,
+                                 organ_type,donor_criteria,
+                                 neut_0m, neut_1m, neut_1m)
+                                  
+
+neut.table = tbl_summary(neut.dgf,  missing = "no", by = dgf_combined1)
+neut.table = neut.table %>% add_n() %>% 
+  add_p() %>% modify_header(label = "Neutrophils") %>% bold_labels()
+
+# diff between DGF groups by HD criteria
+neut0m = kruskal.test(dgf.filter$neut_0m ~ dgf.filter$dgf_combined1, data = dgf.filter)
+neut1m = kruskal.test(dgf.filter$neut_1m ~ dgf.filter$dgf_combined1, data = dgf.filter)
+neut3m =  kruskal.test(dgf.filter$neut_3m ~ dgf.filter$dgf_combined1, data = dgf.filter)
+
+neut0m1 =  kruskal.test(dgf.filter$neut_0m ~ dgf.filter$dgf_define, data = dgf.filter)
+neut1m1 =  kruskal.test(dgf.filter$neut_1m ~ dgf.filter$dgf_define, data = dgf.filter)
+neut3m1 =  kruskal.test(dgf.filter$neut_3m ~ dgf.filter$dgf_define, data = dgf.filter)
+
+# summarise the p.values for graft bchem
+  p.graft.neut.var  = c("Neutrophils (0m)","Neutrophils (1m))", "Neutrophils (3m)")
+                       
+  p.graft.neut.dgf = c(neut0m$p.value, neut1m$p.value, neut3m$p.value)
+  p.graft.neut.donor = c(neut0m1$p.value, neut1m1$p.value, neut3m1$p.value)
+  p.graft.neut.dgf = round(p.graft.neut.dgf, digits = 3)
+  p.graft.neut.donor = round(p.graft.neut.donor, digits = 3)
+  p.graft.neut1 =  cbind(p.graft.neut.var, p.graft.neut.dgf, p.graft.neut.donor)
+    htmlTable((p.graft.neut1))
+
+    # plots
+  n0=ggplot(dgf.filter, aes(x=dgf_combined1, y=neut_0m, fill=dgf_combined1, colour=dgf_combined1))+
+      geom_jitter() +
+      theme_bw(base_size=10)+
+      theme(legend.position="none")+
+      xlab("Groups")+
+      ylab("Neutrophils/hpf")+  ylim(0,15)+
+    ggtitle("0 month")+
+      stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.6, size=0.8)
+    
+  n1=ggplot(dgf.filter, aes(x=dgf_combined1, y=neut_1m, fill=dgf_combined1,colour=dgf_combined1))+
+      geom_jitter() +
+    theme_bw(base_size=10)+
+      theme(legend.position="none")+
+      xlab("Groups")+ylim(0,15)+
+      ylab("Neutrophils/hpf")+ ggtitle("1 month")+
+      stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.6, size=0.98)
+  
+  n3=ggplot(dgf.filter, aes(x=dgf_combined1, y=neut_3m, fill=dgf_combined1,colour=dgf_combined1))+
+      geom_jitter() +
+    theme_bw(base_size=10)+
+      theme(legend.position="none")+
+      xlab("Groups")+ ylim(0,15)+
+      ylab("Neutrophils/hpf")+ ggtitle("3 month")+
+      stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.6, size=0.8)
+             
+    ggarrange(n0,n1,n3, ncol=3, nrol=1, fontsize = 3)
+    
+# add other later
+        
+```
+
+
+# old scripts below - ignore for now
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+######################
+# Biopsy scores - protocol only
+#####################
+dgf_filter.orig = dgf_filter
+
+dgf_filter = dgf_filter.orig
+dgf_filter = dgf_filter[dgf_filter$bparupto03m == 1,]
+
+# plot the i scores across protocol biopsies to 12 months, split by DGF group
+i.mean.0 = tapply(dgf_filter$ci_0m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.0 = tapply(dgf_filter$ci_0m, dgf_filter$dgf_criteria, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ci_0m)-sum(is.na(dgf_filter$ci_0m)))
+i.sd.0 = tapply(dgf_filter$ci_0m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.0 = tapply(dgf_filter$ci_0m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+i.mean.1<-tapply(dgf_filter$ci_1m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.1<-tapply(dgf_filter$ci_1m, dgf_filter$dgf_criteria, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ci_1m)-sum(is.na(dgf_filter$ci_1m)))
+i.sd.1 = tapply(dgf_filter$ci_1m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.1 = tapply(dgf_filter$ci_1m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+i.mean.3<-tapply(dgf_filter$ci_3m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.3<-tapply(dgf_filter$ci_3m, dgf_filter$dgf_criteria, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ci_3m)-sum(is.na(dgf_filter$ci_3m)))
+i.sd.3 = tapply(dgf_filter$ci_3m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.3 = tapply(dgf_filter$ci_3m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+i.mean.12<-tapply(dgf_filter$ci_12m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.12<-tapply(dgf_filter$ci_12m, dgf_filter$dgf_criteria, sd,
+                 na.rm=TRUE)/sqrt(length(dgf_filter$ci_12m)-sum(is.na(dgf_filter$ci_12m)))
+i.sd.12 = tapply(dgf_filter$ci_12m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.12 = tapply(dgf_filter$ci_12m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.i.mean<- rbind(i.mean.0, i.mean.1, i.mean.3, i.mean.12)
+protocol.i.mean<-melt(protocol.i.mean, id.var=dgf)
+protocol.i.mean<-cbind(p.time, protocol.i.mean)
+colnames(protocol.i.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.i.sem <- rbind(i.sem.0, i.sem.1, i.sem.3, i.sem.12)
+protocol.i.sem<-melt(protocol.i.sem, id.var=dgf)
+protocol.i.sem<-cbind(p.time, protocol.i.sem)
+colnames(protocol.i.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.i.sd <- rbind(i.sd.0, i.sd.1, i.sd.3, i.sd.12)
+protocol.i.sd<-melt(protocol.i.sd, id.var=dgf)
+protocol.i.sd<-cbind(p.time, protocol.i.sd)
+colnames(protocol.i.sd)<-c("time", "stat", "strata", "sd")
+
+protocol.i.n <- rbind(i.n.0, i.n.1, i.n.3, i.n.12)
+protocol.i.n<-melt(protocol.i.n, id.var=dgf)
+protocol.i.n<-cbind(p.time, protocol.i.n)
+colnames(protocol.i.n)<-c("time", "stat", "strata", "n")
+
+protocol.i<-protocol.i.mean
+protocol.i<-as.data.frame(protocol.i)
+protocol.i$sem<-protocol.i.sem$sem
+protocol.i$sd<-protocol.i.sd$sd
+protocol.i$n<-protocol.i.n$n
+
+ggplot(protocol.i, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sd), ymax=(mean+sd), group=strata),  width=.2) +
+  theme_classic() +
+  ggtitle("Banff-ci (BPAR 0-3m)")+
+  scale_x_continuous(breaks = c(0,1,3,12))+
+  xlab("Time (months)")+
+  ylab("Banff-ci score")
+
+d0m = fisher.test(table(dgf_filter$ci_0m, dgf_filter$dgf_criteria))
+d1m = fisher.test(table(dgf_filter$ci_1m, dgf_filter$dgf_criteria))
+d3m = fisher.test(table(dgf_filter$ci_3m, dgf_filter$dgf_criteria))
+d12m = fisher.test(table(dgf_filter$ci_12m, dgf_filter$dgf_criteria))
+
+c(d0m$p.value, d1m$p.value, d3m$p.value, d12m$p.value)
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+######################
+# Biopsy scores - protocol only
+#####################
+dgf_filter = dgf_filter.orig
+dgf_filter = dgf_filter[dgf_filter$bparupto03m == 0,]
+
+# plot the i scores across protocol biopsies to 12 months, split by DGF group
+i.mean.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_criteria, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ct_0m)-sum(is.na(dgf_filter$ct_0m)))
+i.sd.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+i.mean.1<-tapply(dgf_filter$ct_1m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.1<-tapply(dgf_filter$ct_1m, dgf_filter$dgf_criteria, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ct_1m)-sum(is.na(dgf_filter$ct_1m)))
+i.sd.1 = tapply(dgf_filter$ct_1m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.1 = tapply(dgf_filter$ct_1m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+i.mean.3<-tapply(dgf_filter$ct_3m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.3<-tapply(dgf_filter$ct_3m, dgf_filter$dgf_criteria, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ct_3m)-sum(is.na(dgf_filter$ct_3m)))
+i.sd.3 = tapply(dgf_filter$ct_3m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.3 = tapply(dgf_filter$ct_3m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+i.mean.12<-tapply(dgf_filter$ct_12m, dgf_filter$dgf_criteria, mean, na.rm=TRUE)
+i.sem.12<-tapply(dgf_filter$ct_12m, dgf_filter$dgf_criteria, sd,
+                 na.rm=TRUE)/sqrt(length(dgf_filter$ct_12m)-sum(is.na(dgf_filter$ct_12m)))
+i.sd.12 = tapply(dgf_filter$ct_12m, dgf_filter$dgf_criteria, sd, na.rm = TRUE)
+i.n.12 = tapply(dgf_filter$ct_12m, dgf_filter$dgf_criteria, count, na.rm=TRUE)
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.i.mean<- rbind(i.mean.0, i.mean.1, i.mean.3, i.mean.12)
+protocol.i.mean<-melt(protocol.i.mean, id.var=dgf)
+protocol.i.mean<-cbind(p.time, protocol.i.mean)
+colnames(protocol.i.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.i.sem <- rbind(i.sem.0, i.sem.1, i.sem.3, i.sem.12)
+protocol.i.sem<-melt(protocol.i.sem, id.var=dgf)
+protocol.i.sem<-cbind(p.time, protocol.i.sem)
+colnames(protocol.i.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.i.sd <- rbind(i.sd.0, i.sd.1, i.sd.3, i.sd.12)
+protocol.i.sd<-melt(protocol.i.sd, id.var=dgf)
+protocol.i.sd<-cbind(p.time, protocol.i.sd)
+colnames(protocol.i.sd)<-c("time", "stat", "strata", "sd")
+
+protocol.i.n <- rbind(i.n.0, i.n.1, i.n.3, i.n.12)
+protocol.i.n<-melt(protocol.i.n, id.var=dgf)
+protocol.i.n<-cbind(p.time, protocol.i.n)
+colnames(protocol.i.n)<-c("time", "stat", "strata", "n")
+
+protocol.i<-protocol.i.mean
+protocol.i<-as.data.frame(protocol.i)
+protocol.i$sem<-protocol.i.sem$sem
+protocol.i$sd<-protocol.i.sd$sd
+protocol.i$n<-protocol.i.n$n
+
+ggplot(protocol.i, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sd), ymax=(mean+sd), group=strata),  width=.2) +
+  theme_classic() +
+  ggtitle("Banff-ct (no BPAR 0-3m)")+
+  scale_x_continuous(breaks = c(0,1,3,12))+
+  xlab("Time (months)")+
+  ylab("Banff-ct score")
+
+d0m = fisher.test(table(dgf_filter$ct_0m, dgf_filter$dgf_criteria))
+d1m = fisher.test(table(dgf_filter$ct_1m, dgf_filter$dgf_criteria))
+d3m = fisher.test(table(dgf_filter$ct_3m, dgf_filter$dgf_criteria))
+d12m = fisher.test(table(dgf_filter$ct_12m, dgf_filter$dgf_criteria))
+
+c(d0m$p.value, d1m$p.value, d3m$p.value, d12m$p.value)
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+######################
+# Biopsy scores - protocol only
+#####################
+dgf_filter1 = dgf_filter[dgf_filter$bparupto03m == 0, ]
+                         
+# plot the i scores across protocol biopsies to 12 months, split by DGF group
+i.mean.0 = tapply(dgf_filter1$ct_0m, dgf_filter1$dgf_severity, mean, na.rm=TRUE)
+i.sem.0 = tapply(dgf_filter1$ct_0m, dgf_filter1$dgf_severity, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter1$ct_0m)-sum(is.na(dgf_filter1$ct_0m)))
+i.sd.0 = tapply(dgf_filter1$ct_0m, dgf_filter1$dgf_severity, sd, na.rm = TRUE)
+i.n.0 = tapply(dgf_filter1$ct_0m, dgf_filter1$dgf_severity, count, na.rm=TRUE)
+
+i.mean.1<-tapply(dgf_filter1$ct_1m, dgf_filter1$dgf_severity, mean, na.rm=TRUE)
+i.sem.1<-tapply(dgf_filter1$ct_1m, dgf_filter1$dgf_severity, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter1$ct_1m)-sum(is.na(dgf_filter1$ct_1m)))
+i.sd.1 = tapply(dgf_filter1$ct_1m, dgf_filter1$dgf_severity, sd, na.rm = TRUE)
+i.n.1 = tapply(dgf_filter1$ct_1m, dgf_filter1$dgf_severity, count, na.rm=TRUE)
+
+i.mean.3<-tapply(dgf_filter1$ct_3m, dgf_filter1$dgf_severity, mean, na.rm=TRUE)
+i.sem.3<-tapply(dgf_filter1$ct_3m, dgf_filter1$dgf_severity, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter1$ct_3m)-sum(is.na(dgf_filter1$ct_3m)))
+i.sd.3 = tapply(dgf_filter1$ct_3m, dgf_filter1$dgf_severity, sd, na.rm = TRUE)
+i.n.3 = tapply(dgf_filter1$ct_3m, dgf_filter1$dgf_severity, count, na.rm=TRUE)
+
+i.mean.12<-tapply(dgf_filter1$ct_12m, dgf_filter1$dgf_severity, mean, na.rm=TRUE)
+i.sem.12<-tapply(dgf_filter1$ct_12m, dgf_filter1$dgf_severity, sd,
+                 na.rm=TRUE)/sqrt(length(dgf_filter1$ct_12m)-sum(is.na(dgf_filter$ct_12m)))
+i.sd.12 = tapply(dgf_filter1$ct_12m, dgf_filter1$dgf_severity, sd, na.rm = TRUE)
+i.n.12 = tapply(dgf_filter1$ct_12m, dgf_filter1$dgf_severity, count, na.rm=TRUE)
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.i.mean<- rbind(i.mean.0, i.mean.1, i.mean.3, i.mean.12)
+protocol.i.mean<-melt(protocol.i.mean, id.var=dgf)
+protocol.i.mean<-cbind(p.time, protocol.i.mean)
+colnames(protocol.i.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.i.sem <- rbind(i.sem.0, i.sem.1, i.sem.3, i.sem.12)
+protocol.i.sem<-melt(protocol.i.sem, id.var=dgf)
+protocol.i.sem<-cbind(p.time, protocol.i.sem)
+colnames(protocol.i.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.i.sd <- rbind(i.sd.0, i.sd.1, i.sd.3, i.sd.12)
+protocol.i.sd<-melt(protocol.i.sd, id.var=dgf)
+protocol.i.sd<-cbind(p.time, protocol.i.sd)
+colnames(protocol.i.sd)<-c("time", "stat", "strata", "sd")
+
+protocol.i.n <- rbind(i.n.0, i.n.1, i.n.3, i.n.12)
+protocol.i.n<-melt(protocol.i.n, id.var=dgf)
+protocol.i.n<-cbind(p.time, protocol.i.n)
+colnames(protocol.i.n)<-c("time", "stat", "strata", "n")
+
+protocol.i<-protocol.i.mean
+protocol.i<-as.data.frame(protocol.i)
+protocol.i$sem<-protocol.i.sem$sem
+protocol.i$sd<-protocol.i.sd$sd
+protocol.i$n<-protocol.i.n$n
+
+ggplot(protocol.i, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  theme_classic() +
+  ggtitle("Banff-ct (no BPAR 0-3m)")+
+  scale_x_continuous(breaks = c(0,1,3,12))+
+  xlab("Time (months)")+
+  ylab("Banff-ct score")
+
+# d0m = fisher.test(table(dgf_filter$ci_0m, dgf_filter$dgf_severity))
+# d1m = fisher.test(table(dgf_filter$ci_1m, dgf_filter$dgf_severity))
+# d3m = fisher.test(table(dgf_filter$ci_3m, dgf_filter$dgf_severity))
+# d12m = fisher.test(table(dgf_filter$ci_12m, dgf_filter$dgf_severity))
+# 
+# c(d0m$p.value, d1m$p.value, d3m$p.value, d12m$p.value)
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+######################
+# Biopsy scores - protocol only
+#####################
+
+# plot the i scores across protocol biopsies to 12 months, split by DGF group
+i.mean.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_severity, mean, na.rm=TRUE)
+i.sem.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_severity, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ct_0m)-sum(is.na(dgf_filter$ct_0m)))
+i.sd.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_severity, sd, na.rm = TRUE)
+i.n.0 = tapply(dgf_filter$ct_0m, dgf_filter$dgf_severity, count, na.rm=TRUE)
+
+i.mean.1<-tapply(dgf_filter$ct_1m, dgf_filter$dgf_severity, mean, na.rm=TRUE)
+i.sem.1<-tapply(dgf_filter$ct_1m, dgf_filter$dgf_severity, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ct_1m)-sum(is.na(dgf_filter$ct_1m)))
+i.sd.1 = tapply(dgf_filter$ct_1m, dgf_filter$dgf_severity, sd, na.rm = TRUE)
+i.n.1 = tapply(dgf_filter$ct_1m, dgf_filter$dgf_severity, count, na.rm=TRUE)
+
+i.mean.3<-tapply(dgf_filter$ct_3m, dgf_filter$dgf_severity, mean, na.rm=TRUE)
+i.sem.3<-tapply(dgf_filter$ct_3m, dgf_filter$dgf_severity, sd,
+                na.rm=TRUE)/sqrt(length(dgf_filter$ct_3m)-sum(is.na(dgf_filter$ct_3m)))
+i.sd.3 = tapply(dgf_filter$ct_3m, dgf_filter$dgf_severity, sd, na.rm = TRUE)
+i.n.3 = tapply(dgf_filter$ct_3m, dgf_filter$dgf_severity, count, na.rm=TRUE)
+
+i.mean.12<-tapply(dgf_filter$ct_12m, dgf_filter$dgf_severity, mean, na.rm=TRUE)
+i.sem.12<-tapply(dgf_filter$ct_12m, dgf_filter$dgf_severity, sd,
+                 na.rm=TRUE)/sqrt(length(dgf_filter$ct_12m)-sum(is.na(dgf_filter$ct_12m)))
+i.sd.12 = tapply(dgf_filter$ct_12m, dgf_filter$dgf_severity, sd, na.rm = TRUE)
+i.n.12 = tapply(dgf_filter$ct_12m, dgf_filter$dgf_severity, count, na.rm=TRUE)
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.i.mean<- rbind(i.mean.0, i.mean.1, i.mean.3, i.mean.12)
+protocol.i.mean<-melt(protocol.i.mean, id.var=dgf)
+protocol.i.mean<-cbind(p.time, protocol.i.mean)
+colnames(protocol.i.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.i.sem <- rbind(i.sem.0, i.sem.1, i.sem.3, i.sem.12)
+protocol.i.sem<-melt(protocol.i.sem, id.var=dgf)
+protocol.i.sem<-cbind(p.time, protocol.i.sem)
+colnames(protocol.i.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.i.sd <- rbind(i.sd.0, i.sd.1, i.sd.3, i.sd.12)
+protocol.i.sd<-melt(protocol.i.sd, id.var=dgf)
+protocol.i.sd<-cbind(p.time, protocol.i.sd)
+colnames(protocol.i.sd)<-c("time", "stat", "strata", "sd")
+
+protocol.i.n <- rbind(i.n.0, i.n.1, i.n.3, i.n.12)
+protocol.i.n<-melt(protocol.i.n, id.var=dgf)
+protocol.i.n<-cbind(p.time, protocol.i.n)
+colnames(protocol.i.n)<-c("time", "stat", "strata", "n")
+
+protocol.i<-protocol.i.mean
+protocol.i<-as.data.frame(protocol.i)
+protocol.i$sem<-protocol.i.sem$sem
+protocol.i$sd<-protocol.i.sd$sd
+protocol.i$n<-protocol.i.n$n
+
+ggplot(protocol.i, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  theme_classic() +
+  ggtitle("Banff-ct (protocol biopsies)")+
+  scale_x_continuous(breaks = c(0,1,3,12))+
+  xlab("Time (months)")+
+  ylab("Banff-ct score")
+
+d0m = fisher.test(table(dgf_filter$ct_0m, dgf_filter$dgf_criteria))
+d1m = fisher.test(table(dgf_filter$ct_1m, dgf_filter$dgf_criteria))
+d3m = fisher.test(table(dgf_filter$ct_3m, dgf_filter$dgf_criteria))
+d12m = fisher.test(table(dgf_filter$ct_12m, dgf_filter$dgf_criteria))
+
+c(d0m$p.value, d1m$p.value, d3m$p.value, d12m$p.value)
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+####################
+# PROTOCOL KINETICS - DGF criteria
+###################
+
+# overall cohort versus stratify by variable - eg rejection
+r.set<-dgf_filter[which(dgf_filter$donor_criteria_ECD==1),]
+
+# plot the i scores across protocol biopsies to 12 months, split by DGF group
+i.mean.0<-tapply(r.set$i_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.0<-tapply(r.set$i_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_0m)-sum(is.na(r.set$i_0m)))
+i.mean.1<-tapply(r.set$i_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.1<-tapply(r.set$i_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_1m)-sum(is.na(r.set$i_1m)))
+i.mean.3<-tapply(r.set$i_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.3<-tapply(r.set$i_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_3m)-sum(is.na(r.set$i_3m)))
+i.mean.12<-tapply(r.set$i_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.12<-tapply(r.set$i_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_12m)-sum(is.na(r.set$i_12m)))
+
+# itest1<- t.test(r.set$i_1m~r.set$dgf_criteria)
+# itest3<- t.test(r.set$i_3m~r.set$dgf_criteria)
+# itest12<- t.test(r.set$i_12m~r.set$dgf_criteria)
+# #itest0<- t.test(r.set$i_0m~r.set$dgf_criteria)
+# i.ttest<-c(itest1$p.value, itest3$p.value, itest12$p.value) 
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.i.mean<- rbind(i.mean.0, i.mean.1, i.mean.3, i.mean.12)
+protocol.i.mean<-melt(protocol.i.mean, id.var=dgf)
+protocol.i.mean<-cbind(p.time, protocol.i.mean)
+colnames(protocol.i.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.i.sem <- rbind(i.sem.0, i.sem.1, i.sem.3, i.sem.12)
+protocol.i.sem<-melt(protocol.i.sem, id.var=dgf)
+protocol.i.sem<-cbind(p.time, protocol.i.sem)
+colnames(protocol.i.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.i<-protocol.i.mean
+protocol.i<-as.data.frame(protocol.i)
+protocol.i$sem<-protocol.i.sem$sem
+
+# t-score
+t.mean.0<-tapply(r.set$t_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.0<-tapply(r.set$t_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_0m)-sum(is.na(r.set$t_0m)))
+t.mean.1<-tapply(r.set$t_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.1<-tapply(r.set$t_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_1m)-sum(is.na(r.set$t_1m)))
+t.mean.3<-tapply(r.set$t_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.3<-tapply(r.set$t_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_3m)-sum(is.na(r.set$t_3m)))
+t.mean.12<-tapply(r.set$t_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.12<-tapply(r.set$t_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_12m)-sum(is.na(r.set$t_12m)))
+
+# ttest1<- t.test(r.set$t_1m~r.set$dgf_criteria)
+# ttest3<- t.test(r.set$t_3m~r.set$dgf_criteria)
+# ttest12<- t.test(r.set$t_12m~r.set$dgf_criteria)
+# #ttest0<- t.test(r.set$t_0m~r.set$dgf_criteria)
+# t.ttest<-c(ttest1$p.value, ttest3$p.value, ttest12$p.value) #
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.t.mean<- rbind(t.mean.0, t.mean.1, t.mean.3, t.mean.12)
+protocol.t.mean<-melt(protocol.t.mean,id.var= dgf)
+protocol.t.mean<-cbind(p.time, protocol.t.mean)
+colnames(protocol.t.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.t.sem <- rbind(t.sem.0, t.sem.1, t.sem.3, t.sem.12)
+protocol.t.sem<-melt(protocol.t.sem, id.var=dgf)
+protocol.t.sem<-cbind(p.time, protocol.t.sem)
+colnames(protocol.t.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.t<-protocol.t.mean
+protocol.t<-as.data.frame(protocol.t)
+protocol.t$sem<-protocol.t.sem$sem
+
+# ci score
+ci.mean.0<-tapply(r.set$ci_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.0<-tapply(r.set$ci_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_0m)-sum(is.na(r.set$ci_0m)))
+ci.mean.1<-tapply(r.set$ci_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.1<-tapply(r.set$ci_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_1m)-sum(is.na(r.set$ci_1m)))
+ci.mean.3<-tapply(r.set$ci_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.3<-tapply(r.set$ci_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_3m)-sum(is.na(r.set$ci_3m)))
+ci.mean.12<-tapply(r.set$ci_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.12<-tapply(r.set$ci_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_12m)-sum(is.na(r.set$ci_12m)))
+#
+# citest1<- t.test(r.set$ci_1m~r.set$dgf_criteria)
+# citest3<- t.test(r.set$ci_3m~r.set$dgf_criteria)
+# citest12<- t.test(r.set$ci_12m~r.set$dgf_criteria)
+# #citest0<- t.test(r.set$ci_0m~r.set$dgf_criteria)
+# ci.ttest<-c(citest1$p.value, citest3$p.value, citest12$p.value) #
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.ci.mean<- rbind(ci.mean.0, ci.mean.1, ci.mean.3, ci.mean.12)
+protocol.ci.mean<-melt(protocol.ci.mean, id.var=dgf)
+protocol.ci.mean<-cbind(p.time, protocol.ci.mean)
+colnames(protocol.ci.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.ci.sem <- rbind(ci.sem.0, ci.sem.1, ci.sem.3, ci.sem.12)
+protocol.ci.sem<-melt(protocol.ci.sem, id.var=dgf)
+protocol.ci.sem<-cbind(p.time, protocol.ci.sem)
+colnames(protocol.ci.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.ci<-protocol.ci.mean
+protocol.ci<-as.data.frame(protocol.ci)
+protocol.ci$sem<-protocol.ci.sem$sem
+
+# ct score
+ct.mean.0<-tapply(r.set$ct_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.0<-tapply(r.set$ct_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_0m)-sum(is.na(r.set$ct_0m)))
+ct.mean.1<-tapply(r.set$ct_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.1<-tapply(r.set$ct_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_1m)-sum(is.na(r.set$ct_1m)))
+ct.mean.3<-tapply(r.set$ct_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.3<-tapply(r.set$ct_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_3m)-sum(is.na(r.set$ct_3m)))
+ct.mean.12<-tapply(r.set$ct_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.12<-tapply(r.set$ct_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_12m)-sum(is.na(r.set$ct_12m)))
+
+# cttest1<- t.test(r.set$ct_1m~r.set$dgf_criteria)
+# cttest3<- t.test(r.set$ct_3m~r.set$dgf_criteria)
+# cttest12<- t.test(r.set$ct_12m~r.set$dgf_criteria)
+# #cttest0<- t.test(r.set$ct_0m~r.set$dgf_criteria)
+# ct.ttest<-c( cttest1$p.value, cttest3$p.value, cttest12$p.value) #
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1)
+
+protocol.ct.mean<- rbind(ct.mean.0, ct.mean.1, ct.mean.3, ct.mean.12)
+protocol.ct.mean<-melt(protocol.ct.mean, id.var=dgf)
+protocol.ct.mean<-cbind(p.time, protocol.ct.mean)
+colnames(protocol.ct.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.ct.sem <- rbind(ct.sem.0, ct.sem.1, ct.sem.3, ct.sem.12)
+protocol.ct.sem<-melt(protocol.ct.sem, id.var=dgf)
+protocol.ct.sem<-cbind(p.time, protocol.ct.sem)
+colnames(protocol.ct.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.ct<-protocol.ct.mean
+protocol.ct<-as.data.frame(protocol.ct)
+protocol.ct$sem<-protocol.ct.sem$sem
+
+# table1(~ci_0m+ct_0m +ci_1m+ct_1m + ci_3m+ct_3m+ ci_12m+ct_12m|dgf_criteria1, data = r.set)
+# statp<-cbind(ci.ttest, ct.ttest)
+# View(statp)
+
+# plots
+i.score<-
+  ggplot(protocol.i, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+  ylim(0,1.8)+
+  ggtitle("Banff-i")+
+  xlab("Time (months)")+
+  ylab("Banff-i score")
+
+ci.score<-
+  ggplot(protocol.ci, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+  ylim(0,1.8)+
+  xlim(0,12)+
+  ggtitle("Banff-ci (ECD)")+
+  xlab("Time (months)")+
+  ylab("Banff-ci score")
+
+t.score<-
+  ggplot(protocol.t, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+    ylim(0,1.8)+
+  ggtitle("Banff-t")+
+  xlab("Time (months)")+
+  ylab("Banff-t score")
+
+ct.score<-
+  ggplot(protocol.ct, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+  ylim(0,1.8)+
+  ggtitle("Banff-ct (ECD)")+
+  xlab("Time (months)")+
+  ylab("Banff-ct score")
+
+ggarrange(i.score, t.score, ci.score, ct.score)
+
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+
+ci.all<-ci.score
+ct.all<-ct.score
+
+ci.dcd<-ci.score
+ct.dcd<-ct.score
+
+ci.ecd<-ci.score
+ct.ecd<-ct.score
+
+ci.bp<-ci.score
+ct.bp<-ct.score
+
+ci.bpfree<-ci.score
+ct.bpfree<-ct.score
+
+ci.sub<-ci.score
+ct.sub<-ct.score
+
+ci.sub01<-ci.score
+ct.sub01<-ct.score
+
+ci.aki<-ci.score
+ct.aki<-ct.score
+
+ggarrange(ci.all, ci.bp, ci.dcd, ct.dcd, ct.ecd, ct.ecd,nrow=2, ncol=3)
+ggarrange(ci.all, ci.bp, ci.sub, ct.all, ct.bp, ct.sub,nrow=2, ncol=3)
+ggarrange(ci.all, ci.bp, ci.sub, ci.sub01, ct.all, ct.bp, ct.sub, ct.sub01, nrow=2, ncol=4)
+
+ci.aki.all <-ci.score
+ct.aki.all <-ct.score
+
+ci.aki.bp <-ci.score
+ct.aki.bp <-ct.score
+
+
+ggarrange(ci.all, ci.bp, ci.aki.all, ci.aki.bp, ct.all, ct.bp, ct.aki.all, ct.aki.bp, nrow=2, ncol=4)
+
+ggarrange(ci.dcd, ci.ecd, ci.aki.all, ci.aki.bp, ct.dcd, ct.ecd, ct.aki.all, ct.aki.bp, nrow=2, ncol=4)
+
+ggarrange(ci.all, ci.bp, ci.dcd, ci.sub,
+          ct.all, ct.bp, ct.dcd, ct.sub,
+          ci.aki.all, ci.bpfree,  ci.ecd, ci.sub01, 
+          ct.aki.all, ct.bpfree, ct.ecd, ct.sub01, 
+          nrow=4, ncol=4)
+
+ggarrange(ci.all, ci.dcd, ci.bp, ci.sub, 
+          ct.all, ct.dcd, ct.bp, ct.sub,
+          ci.aki.all, ci.aki.bp, ci.bpfree, ci.sub01, 
+          ct.aki.all, ct.aki.bp, ct.bpfree, ct.sub01, 
+          nrow=4, ncol=4)
+
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+####################
+# PROTOCOL KINETICS - AKI groups (GRAPHS only)
+###################
+
+r.set<-dgf_filter[which(dgf_filter$bpar_any==1),]
+
+# plot the i scores across protocol biopsies to 12 months, split by DGF group
+i.mean.0<-tapply(r.set$i_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.0<-tapply(r.set$i_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_0m)-sum(is.na(r.set$i_0m)))
+i.mean.1<-tapply(r.set$i_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.1<-tapply(r.set$i_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_1m)-sum(is.na(r.set$i_1m)))
+i.mean.3<-tapply(r.set$i_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.3<-tapply(r.set$i_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_3m)-sum(is.na(r.set$i_3m)))
+i.mean.12<-tapply(r.set$i_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+i.sem.12<-tapply(r.set$i_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$i_12m)-sum(is.na(r.set$i_12m)))
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1,2,3)
+
+protocol.i.mean<- rbind(i.mean.0, i.mean.1, i.mean.3, i.mean.12)
+protocol.i.mean<-melt(protocol.i.mean, id.var=dgf)
+protocol.i.mean<-cbind(p.time, protocol.i.mean)
+colnames(protocol.i.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.i.sem <- rbind(i.sem.0, i.sem.1, i.sem.3, i.sem.12)
+protocol.i.sem<-melt(protocol.i.sem, id.var=dgf)
+protocol.i.sem<-cbind(p.time, protocol.i.sem)
+colnames(protocol.i.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.i<-protocol.i.mean
+protocol.i<-as.data.frame(protocol.i)
+protocol.i$sem<-protocol.i.sem$sem
+
+# t-score
+t.mean.0<-tapply(r.set$t_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.0<-tapply(r.set$t_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_0m)-sum(is.na(r.set$t_0m)))
+t.mean.1<-tapply(r.set$t_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.1<-tapply(r.set$t_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_1m)-sum(is.na(r.set$t_1m)))
+t.mean.3<-tapply(r.set$t_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.3<-tapply(r.set$t_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_3m)-sum(is.na(r.set$t_3m)))
+t.mean.12<-tapply(r.set$t_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+t.sem.12<-tapply(r.set$t_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$t_12m)-sum(is.na(r.set$t_12m)))
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1,2,3)
+
+protocol.t.mean<- rbind(t.mean.0, t.mean.1, t.mean.3, t.mean.12)
+protocol.t.mean<-melt(protocol.t.mean,id.var= dgf)
+protocol.t.mean<-cbind(p.time, protocol.t.mean)
+colnames(protocol.t.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.t.sem <- rbind(t.sem.0, t.sem.1, t.sem.3, t.sem.12)
+protocol.t.sem<-melt(protocol.t.sem, id.var=dgf)
+protocol.t.sem<-cbind(p.time, protocol.t.sem)
+colnames(protocol.t.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.t<-protocol.t.mean
+protocol.t<-as.data.frame(protocol.t)
+protocol.t$sem<-protocol.t.sem$sem
+
+# ci score
+ci.mean.0<-tapply(r.set$ci_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.0<-tapply(r.set$ci_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_0m)-sum(is.na(r.set$ci_0m)))
+ci.mean.1<-tapply(r.set$ci_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.1<-tapply(r.set$ci_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_1m)-sum(is.na(r.set$ci_1m)))
+ci.mean.3<-tapply(r.set$ci_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.3<-tapply(r.set$ci_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_3m)-sum(is.na(r.set$ci_3m)))
+ci.mean.12<-tapply(r.set$ci_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ci.sem.12<-tapply(r.set$ci_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ci_12m)-sum(is.na(r.set$ci_12m)))
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1,2,3)
+
+protocol.ci.mean<- rbind(ci.mean.0, ci.mean.1, ci.mean.3, ci.mean.12)
+protocol.ci.mean<-melt(protocol.ci.mean, id.var=dgf)
+protocol.ci.mean<-cbind(p.time, protocol.ci.mean)
+colnames(protocol.ci.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.ci.sem <- rbind(ci.sem.0, ci.sem.1, ci.sem.3, ci.sem.12)
+protocol.ci.sem<-melt(protocol.ci.sem, id.var=dgf)
+protocol.ci.sem<-cbind(p.time, protocol.ci.sem)
+colnames(protocol.ci.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.ci<-protocol.ci.mean
+protocol.ci<-as.data.frame(protocol.ci)
+protocol.ci$sem<-protocol.ci.sem$sem
+
+# ct score
+ct.mean.0<-tapply(r.set$ct_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.0<-tapply(r.set$ct_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_0m)-sum(is.na(r.set$ct_0m)))
+ct.mean.1<-tapply(r.set$ct_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.1<-tapply(r.set$ct_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_1m)-sum(is.na(r.set$ct_1m)))
+ct.mean.3<-tapply(r.set$ct_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.3<-tapply(r.set$ct_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_3m)-sum(is.na(r.set$ct_3m)))
+ct.mean.12<-tapply(r.set$ct_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+ct.sem.12<-tapply(r.set$ct_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ct_12m)-sum(is.na(r.set$ct_12m)))
+
+p.time<- c(0,1,3,12, 0,1,3,12)
+dgf<-c(0,1,2,3)
+
+protocol.ct.mean<- rbind(ct.mean.0, ct.mean.1, ct.mean.3, ct.mean.12)
+protocol.ct.mean<-melt(protocol.ct.mean, id.var=dgf)
+protocol.ct.mean<-cbind(p.time, protocol.ct.mean)
+colnames(protocol.ct.mean)<-c("time", "stat", "strata", "mean")
+
+protocol.ct.sem <- rbind(ct.sem.0, ct.sem.1, ct.sem.3, ct.sem.12)
+protocol.ct.sem<-melt(protocol.ct.sem, id.var=dgf)
+protocol.ct.sem<-cbind(p.time, protocol.ct.sem)
+colnames(protocol.ct.sem)<-c("time", "stat", "strata", "sem")
+
+protocol.ct<-protocol.ct.mean
+protocol.ct<-as.data.frame(protocol.ct)
+protocol.ct$sem<-protocol.ct.sem$sem
+
+# plots
+i.score<-
+  ggplot(protocol.i, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+    ylim(0,1.8)+
+  ggtitle("Banff-i")+
+  xlab("Time (months)")+
+  ylab("Banff-i score")
+
+ci.score<-
+  ggplot(protocol.ci, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+  ylim(0,1.8)+
+  ggtitle("Banff-ci (AKI-BPAR)")+
+  xlab("Time (months)")+
+  ylab("Banff-ci score")
+
+t.score<-
+  ggplot(protocol.t, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+    ylim(0,1.8)+
+  ggtitle("Banff-t")+
+  xlab("Time (months)")+
+  ylab("Banff-t score")
+
+ct.score<-
+  ggplot(protocol.ct, aes(x=time, y=mean, group = strata, colour=strata)) + 
+  geom_point() +
+  geom_path() + 
+  geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+  theme_classic() +
+  ylim(0,1.8)+
+  ggtitle("Banff-ct (AKI-BPAR)")+
+  xlab("Time (months)")+
+  ylab("Banff-ct score")
+
+```
+
+```{r,  echo=TRUE, results = FALSE, warning = FALSE, eval = FALSE}
+############ OLD ############
+# # g-score
+# g.mean.0<-tapply(r.set$g_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# g.sem.0<-tapply(r.set$g_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$g_0m)-sum(is.na(r.set$g_0m)))
+# g.mean.1<-tapply(r.set$g_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# g.sem.1<-tapply(r.set$g_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$g_1m)-sum(is.na(r.set$g_1m)))
+# g.mean.3<-tapply(r.set$g_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# g.sem.3<-tapply(r.set$g_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$g_3m)-sum(is.na(r.set$g_3m)))
+# g.mean.12<-tapply(r.set$g_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# g.sem.12<-tapply(r.set$g_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$g_12m)-sum(is.na(r.set$g_12m)))
+# 
+# gtest1<- t.test(r.set$g_1m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# gtest3<- t.test(r.set$g_3m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# gtest12<- t.test(r.set$g_12m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# gtest0<- t.test(r.set$g_0m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# g.ttest<-c(gtest0$p.value, gtest1$p.value, gtest3$p.value, gtest12$p.value)
+# 
+# p.time<- c(0,1,3,12, 0,1,3,12)
+# dgf<-c(0,1)
+
+# protocol.g.mean<- rbind(g.mean.0, g.mean.1, g.mean.3, g.mean.12)
+# protocol.g.mean<-melt(protocol.g.mean, dgf)
+# protocol.g.mean<-cbind(p.time, protocol.g.mean)
+# colnames(protocol.g.mean)<-c("time", "stat", "strata", "mean")
+# 
+# protocol.g.sem <- rbind(g.sem.0, g.sem.1, g.sem.3, g.sem.12)
+# protocol.g.sem<-melt(protocol.g.sem, dgf)
+# protocol.g.sem<-cbind(p.time, protocol.g.sem)
+# colnames(protocol.g.sem)<-c("time", "stat", "strata", "sem")
+# 
+# protocol.g<-protocol.g.mean
+# protocol.g<-as.data.frame(protocol.g)
+# protocol.g$sem<-protocol.g.sem$sem
+# 
+# # v-score
+# v.mean.0<-tapply(r.set$v_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# v.sem.0<-tapply(r.set$v_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$v_0m)-sum(is.na(r.set$v_0m)))
+# v.mean.1<-tapply(r.set$v_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# v.sem.1<-tapply(r.set$v_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$v_1m)-sum(is.na(r.set$v_1m)))
+# v.mean.3<-tapply(r.set$v_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# v.sem.3<-tapply(r.set$v_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$v_3m)-sum(is.na(r.set$v_3m)))
+# v.mean.12<-tapply(r.set$v_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# v.sem.12<-tapply(r.set$v_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$v_12m)-sum(is.na(r.set$v_12m)))
+# 
+# vtest1<- t.test(r.set$v_1m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# vtest3<- t.test(r.set$v_3m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# vtest12<- t.test(r.set$v_12m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# vtest0<- t.test(r.set$v_0m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# v.ttest<-c(vtest0$p.value, vtest1$p.value, vtest3$p.value, vtest12$p.value)
+# 
+# p.time<- c(0,1,3,12, 0,1,3,12)
+# dgf<-c(0,1)
+
+# protocol.v.mean<- rbind(v.mean.0, v.mean.1, v.mean.3, v.mean.12)
+# protocol.v.mean<-melt(protocol.v.mean, dgf)
+# protocol.v.mean<-cbind(p.time, protocol.v.mean)
+# colnames(protocol.v.mean)<-c("time", "stat", "strata", "mean")
+# 
+# protocol.v.sem <- rbind(v.sem.0, v.sem.1, v.sem.3, v.sem.12)
+# protocol.v.sem<-melt(protocol.v.sem, dgf)
+# protocol.v.sem<-cbind(p.time, protocol.v.sem)
+# colnames(protocol.v.sem)<-c("time", "stat", "strata", "sem")
+# 
+# protocol.v<-protocol.v.mean
+# protocol.v<-as.data.frame(protocol.v)
+# protocol.v$sem<-protocol.v.sem$sem
+# # cg-score
+# cg.mean.0<-tapply(r.set$cg_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cg.sem.0<-tapply(r.set$cg_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cg_0m)-sum(is.na(r.set$cg_0m)))
+# cg.mean.1<-tapply(r.set$cg_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cg.sem.1<-tapply(r.set$cg_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cg_1m)-sum(is.na(r.set$cg_1m)))
+# cg.mean.3<-tapply(r.set$cg_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cg.sem.3<-tapply(r.set$cg_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cg_3m)-sum(is.na(r.set$cg_3m)))
+# cg.mean.12<-tapply(r.set$cg_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cg.sem.12<-tapply(r.set$cg_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cg_12m)-sum(is.na(r.set$cg_12m)))
+# 
+# cgtest1<- t.test(r.set$cg_1m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cgtest3<- t.test(r.set$cg_3m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cgtest12<- t.test(r.set$cg_12m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cgtest0<- t.test(r.set$cg_0m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cg.ttest<-c(cgtest0$p.value, cgtest1$p.value, cgtest3$p.value, cgtest12$p.value)
+# 
+# p.time<- c(0,1,3,12, 0,1,3,12)
+# dgf<-c(0,1)
+# 
+# protocol.cg.mean<- rbind(cg.mean.0, cg.mean.1, cg.mean.3, cg.mean.12)
+# protocol.cg.mean<-melt(protocol.cg.mean, dgf)
+# protocol.cg.mean<-cbind(p.time, protocol.cg.mean)
+# colnames(protocol.cg.mean)<-c("time", "stat", "strata", "mean")
+# 
+# protocol.cg.sem <- rbind(cg.sem.0, cg.sem.1, cg.sem.3, cg.sem.12)
+# protocol.cg.sem<-melt(protocol.cg.sem, dgf)
+# protocol.cg.sem<-cbind(p.time, protocol.cg.sem)
+# colnames(protocol.cg.sem)<-c("time", "stat", "strata", "sem")
+# 
+# protocol.cg<-protocol.cg.mean
+# protocol.cg<-as.data.frame(protocol.cg)
+# protocol.cg$sem<-protocol.cg.sem$sem
+# 
+# # cv-score
+# cv.mean.0<-tapply(r.set$cv_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cv.sem.0<-tapply(r.set$cv_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cv_0m)-sum(is.na(r.set$cv_0m)))
+# cv.mean.1<-tapply(r.set$cv_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cv.sem.1<-tapply(r.set$cv_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cv_1m)-sum(is.na(r.set$cv_1m)))
+# cv.mean.3<-tapply(r.set$cv_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cv.sem.3<-tapply(r.set$cv_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cv_3m)-sum(is.na(r.set$cv_3m)))
+# cv.mean.12<-tapply(r.set$cv_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# cv.sem.12<-tapply(r.set$cv_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$cv_12m)-sum(is.na(r.set$cv_12m)))
+# 
+# cvtest1<- t.test(r.set$cv_1m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cvtest3<- t.test(r.set$cv_3m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cvtest12<- t.test(r.set$cv_12m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cvtest0<- t.test(r.set$cv_0m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# cv.ttest<-c(cvtest0$p.value, cvtest1$p.value, cvtest3$p.value, cvtest12$p.value)
+# 
+# p.time<- c(0,1,3,12, 0,1,3,12)
+# dgf<-c(0,1)
+# 
+# protocol.cv.mean<- rbind(cv.mean.0, cv.mean.1, cv.mean.3, cv.mean.12)
+# protocol.cv.mean<-melt(protocol.cv.mean, dgf)
+# protocol.cv.mean<-cbind(p.time, protocol.cv.mean)
+# colnames(protocol.cv.mean)<-c("time", "stat", "strata", "mean")
+# 
+# protocol.cv.sem <- rbind(cv.sem.0, cv.sem.1, cv.sem.3, cv.sem.12)
+# protocol.cv.sem<-melt(protocol.cv.sem, dgf)
+# protocol.cv.sem<-cbind(p.time, protocol.cv.sem)
+# colnames(protocol.cv.sem)<-c("time", "stat", "strata", "sem")
+# 
+# protocol.cv<-protocol.cv.mean
+# protocol.cv<-as.data.frame(protocol.cv)
+# protocol.cv$sem<-protocol.cv.sem$sem
+# 
+# # ah-score
+# ah.mean.0<-tapply(r.set$ah_0m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# ah.sem.0<-tapply(r.set$ah_0m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ah_0m)-sum(is.na(r.set$ah_0m)))
+# ah.mean.1<-tapply(r.set$ah_1m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# ah.sem.1<-tapply(r.set$ah_1m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ah_1m)-sum(is.na(r.set$ah_1m)))
+# ah.mean.3<-tapply(r.set$ah_3m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# ah.sem.3<-tapply(r.set$ah_3m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ah_3m)-sum(is.na(r.set$ah_3m)))
+# ah.mean.12<-tapply(r.set$ah_12m, r.set$dgf_criteria1, mean, na.rm=TRUE)
+# ah.sem.12<-tapply(r.set$ah_12m, r.set$dgf_criteria1, sd, na.rm=TRUE)/sqrt(length(r.set$ah_12m)-sum(is.na(r.set$ah_12m)))
+# 
+# ahtest1<- t.test(r.set$ah_1m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# ahtest3<- t.test(r.set$ah_3m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# ahtest12<- t.test(r.set$ah_12m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# ahtest0<- t.test(r.set$ah_0m, r.set$dgf_criteria, alternative = "two.sided", var.equal = FALSE)
+# ah.ttest<-c(ahtest0$p.value, ahtest1$p.value, ahtest3$p.value, ahtest12$p.value)
+# 
+# p.time<- c(0,1,3,12, 0,1,3,12)
+# dgf<-c(0,1)
+# 
+# protocol.ah.mean<- rbind(ah.mean.0, ah.mean.1, ah.mean.3, ah.mean.12)
+# protocol.ah.mean<-melt(protocol.ah.mean, dgf)
+# protocol.ah.mean<-cbind(p.time, protocol.ah.mean)
+# colnames(protocol.ah.mean)<-c("time", "stat", "strata", "mean")
+# 
+# protocol.ah.sem <- rbind(ah.sem.0, ah.sem.1, ah.sem.3, ah.sem.12)
+# protocol.ah.sem<-melt(protocol.ah.sem, dgf)
+# protocol.ah.sem<-cbind(p.time, protocol.ah.sem)
+# colnames(protocol.ah.sem)<-c("time", "stat", "strata", "sem")
+# 
+# protocol.ah<-protocol.ah.mean
+# protocol.ah<-as.data.frame(protocol.ah)
+# protocol.ah$sem<-protocol.ah.sem$sem
+
+# pvalues<-cbind(i.ttest, t.ttest, ci.ttest, ct.ttest)
+# # g.ttest, v.ttest, ah.ttest, , cg.ttest, cv.ttest
+# rownames(pvalues)<-c("0m", "1m", "3m", "12m")
+# pvalues<-round(pvalues, digits = 3)
+# View(pvalues)
+
+# g.score<-
+#   ggplot(protocol.g, aes(x=time, y=mean, group = strata, colour=strata)) + 
+#   geom_point() +
+#   geom_path() + 
+#   geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+#   theme_classic() +
+#   ggtitle("Banff-g")+
+#   xlab("Time (months)")+
+#   ylab("Banff-g score")
+# 
+# cg.score<-
+#   ggplot(protocol.cg, aes(x=time, y=mean, group = strata, colour=strata)) + 
+#   geom_point() +
+#   geom_path() + 
+#   geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+#   theme_classic() +
+#   ggtitle("Banff-cg")+
+#   xlab("Time (months)")+
+#   ylab("Banff-cg score")
+# 
+# v.score<-
+#   ggplot(protocol.v, aes(x=time, y=mean, group = strata, colour=strata)) + 
+#   geom_point() +
+#   geom_path() + 
+#   geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+#   theme_classic() +
+#   ggtitle("Banff-v")+
+#   xlab("Time (months)")+
+#   ylab("Banff-v score")
+# 
+# cv.score<-
+#   ggplot(protocol.cv, aes(x=time, y=mean, group = strata, colour=strata)) + 
+#   geom_point() +
+#   geom_path() + 
+#   geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+#   theme_classic() +
+#   ggtitle("Banff-cv")+
+#   xlab("Time (months)")+
+#   ylab("Banff-cv score")
+# 
+# ah.score<-
+#   ggplot(protocol.ah, aes(x=time, y=mean, group = strata, colour=strata)) + 
+#   geom_point() +
+#   geom_path() + 
+#   geom_errorbar(aes(ymin=(mean-sem), ymax=(mean+sem), group=strata),  width=.2) +
+#   theme_classic() +
+#   ggtitle("Banff-ah")+
+#   xlab("Time (months)")+
+#   ylab("Banff-ah score")
+# ggarrange(i.score, t.score, g.score, v.score, ci.score, ct.score, cg.score, cv.score, ah.score)
+
+```
+
+
+

@@ -1,0 +1,1415 @@
+---
+title: "mTolDC"
+author: "Jen Li"
+output: html_document
+---
+### Set up chunk for downstream analysis
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# set working directory
+  setwd("~/Documents/Project data - R files/TolDC/")
+  knitr::opts_chunk$set(echo = FALSE, cache = FALSE, eval = FALSE, 
+                        message = FALSE, warning = FALSE)
+
+# load pkgs, pkg.versions & custom functions
+  source("setup/setup.toldc.R")
+
+# record of pkgs
+  writeLines(capture.output(sessionInfo()), "setup/current.packages.txt")
+  write.table(pkg.versions, "setup/package.versions.txt", append = FALSE, 
+            sep = " ", dec = ".", row.names = TRUE, col.names = TRUE)
+
+set.seed(42)
+gc()
+```
+
+### Load raw data 
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+dcs = readRDS("RDS/dcs.RDS") 
+  #dds = DGEList(counts = dcs, group = factor(coldata$Treatment))
+  #dds$samples$rep = as.factor(coldata$Rep)
+
+coldata = read_excel("csv/metadata.xlsx")
+genelist = data.frame(rownames(dcs))
+
+t.data = readRDS("RDS/211208__rnaSeqData_stranded.RDS")
+  t.data$samples$group1 = t.data$samples$group
+  t.data$samples$group = ifelse(t.data$samples$group1 == "cont", "Nil", t.data$samples$group)
+  t.data$samples$group = ifelse(t.data$samples$group1 == "cont_LPS", "LPS", t.data$samples$group)
+  t.data$samples$group = ifelse(t.data$samples$group1 == "TolDC", "TolDC", t.data$samples$group)
+  t.data$samples$group = ifelse(t.data$samples$group1 == "TolDC_LPS","LPS_TolDC", t.data$samples$group)
+```
+
+### Load DEG data
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# re-run if needed 
+  # source("setup/EdgeR.cutoff0.R")
+  # source("setup/limma.cutoff0.R")
+
+# Alternative - if want to change cutoffs, use
+  # toldc.limma = limma.to.DEG(fc.threshold)
+  # toldc.edgeR = edgeR.to.DEG(fc.threshold)
+
+dds =  readRDS("RDS/dds.edgeR.RDS")
+dds.cpm = readRDS("RDS/dds.cpm.RDS")
+glmfit = readRDS("RDS/glmfit.edgeR.RDS")
+efit = readRDS("RDS/efit.limma.RDS")
+contrast.mat =  readRDS("RDS/contrasts.edgeR.RDS")
+
+design = model.matrix(~0 + group + rep, data = dds$samples)
+colnames(design) = gsub("group", "", colnames(design))
+contrast.mat = makeContrasts(nil.lps = Nil- LPS,
+                             nil.tol = Nil - TolDC,
+                             nil.lpstol = Nil - LPS_TolDC,
+                             lps.nil = LPS - Nil,
+                             lps.tol = LPS - TolDC,
+                             lps.lpstol = LPS - LPS_TolDC,
+                             tol.nil = TolDC - Nil,
+                             tol.lps = TolDC - LPS,
+                             tol.lpstol = TolDC - LPS_TolDC,
+                             lpstol.nil = LPS_TolDC - Nil,
+                             lpstol.lps = LPS_TolDC - LPS,
+                             lpstol.tol = LPS_TolDC - TolDC,
+                             levels = design)
+
+# already filtered for padj < 0.05
+toldc.edgeR =  readRDS("RDS/results.edgeR.RDS")
+  lpst.tol = toldc.edgeR@lpst.tol
+  lpstol.lps = toldc.edgeR@lpstol.lps
+  lpstol.nil = toldc.edgeR@lpstol.nil
+  tol.lps = toldc.edgeR@tol.lps
+  tol.nil = toldc.edgeR@tol.nil
+  lps.nil = toldc.edgeR@lps.nil
+
+toldc.limma =  readRDS("RDS/results.limma.RDS") 
+  e.lpstol.tol = toldc.limma@lpst.tol
+  e.lpstol.lps= toldc.limma@lpstol.lps
+  e.lpstol.nil = toldc.limma@lpstol.nil
+  e.tol.lps = toldc.limma@tol.lps
+  e.tol.nil = toldc.limma@tol.nil
+  e.lps.nil = toldc.limma@lps.nil
+
+# Basic QC
+dds.cpm.table = as.data.frame(t(dds.cpm))
+dds.cpm.table1 = cbind(dds.cpm.table, condition = dds$samples$group)
+pca1 = prcomp(dds.cpm.table)
+
+  boxplot(dds.cpm, las=2, 
+        ylab = "Expression in log-cpm",
+        main="log-CPM After Filtering & TMM")
+  autoplot(pca1, data= dds.cpm.table1, colour = "condition" ,size = 5) + theme_classic()
+  as.data.frame(plotMDS(dds))
+  plotBCV(dds)
+```
+
+### Initial processing of data for analysis
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# thres = 0 # can adjust this
+# 
+# common.up = e.lpstol.tol[e.lpstol.tol$logFC>thres,]
+# common.up = common.up[common.up$Symbol %in% e.lpstol.lps[e.lpstol.lps$logFC>thres,]$Symbol, ]
+# common.up = common.up[common.up$Symbol %in% e.lpstol.nil[e.lpstol.nil$logFC>thres,]$Symbol, ]
+# 
+# common.down = e.lpstol.tol[e.lpstol.tol$logFC< -1*thres,]
+# common.down = common.down[common.down$Symbol %in% e.lpstol.lps[e.lpstol.lps$logFC< -1*thres,]$Symbol, ]
+# common.down = common.down[common.down$Symbol %in% e.lpstol.nil[e.lpstol.nil$logFC< -1*thres,]$Symbol, ]
+# 
+# common = rbind(common.up, common.down)
+# View(common)
+
+  lfc = 0 # log2(FC), make it zero to start, then filter after
+  pCutoff = 0.05
+
+  # subset
+  sup.lpst.tol = subset(e.lpstol.tol, e.lpstol.tol$logFC > lfc)
+  sup.lpst.lps = subset(e.lpstol.lps, e.lpstol.lps$logFC > lfc)
+  sup.lpst.nil = subset(e.lpstol.nil, e.lpstol.nil$logFC > lfc)
+  sup.tol.lps = subset(e.tol.lps, e.tol.lps$logFC > lfc)
+  sup.tol.nil = subset(e.tol.nil, e.tol.nil$logFC > lfc)
+  sup.lps.nil = subset(e.lps.nil, e.lps.nil$logFC > lfc)
+
+  sd.lpst.tol = subset(e.lpstol.tol, e.lpstol.tol$logFC < -1*lfc)
+  sd.lpst.lps = subset(e.lpstol.lps, e.lpstol.lps$logFC < -1*lfc)
+  sd.lpst.nil = subset(e.lpstol.nil, e.lpstol.nil$logFC < -1*lfc)
+  sd.tol.lps = subset(e.tol.lps, e.tol.lps$logFC < -1*lfc)
+  sd.tol.nil = subset(e.tol.nil, e.tol.nil$logFC < -1*lfc)
+  sd.lps.nil = subset(e.lps.nil, e.lps.nil$logFC < -1*lfc)
+  
+  # summary dataframe
+  summary.limma1 = data.frame(cbind(c(nrow(sup.lpst.tol), nrow(sd.lpst.tol)), 
+                                    c(nrow(sup.lpst.lps), nrow(sd.lpst.lps)),
+                                    c(nrow(sup.lpst.nil), nrow(sd.lpst.nil)), 
+                                    c(nrow(sup.tol.lps), nrow(sd.tol.lps)),
+                                    c(nrow(sup.tol.nil), nrow(sd.tol.nil)), 
+                                    c(nrow(sup.lps.nil), nrow(sd.lps.nil))))
+  rownames(summary.limma1) = c("up", "down")
+  colnames(summary.limma1) = c("LPSTol.Tol", "LPSTol.LPS", 
+                               "LPSTol.Nil", "Tol.LPS", "Tol.Nil", "LPS.Nil")
+  
+  # Common up and down of LPS.TolDC vs rest
+  common.up = c()
+  common.up = sup.lpst.tol[sup.lpst.tol$Symbol %in% sup.lpst.lps$Symbol,]
+  common.up = common.up[common.up$Symbol %in% sup.lpst.nil$Symbol, ]
+  common.up1 = sup.lpst.tol[sup.lpst.tol$Symbol %in% common.up$Symbol,]
+  int.up = rownames(common.up)
+  
+  common.down = c()
+  common.down = sd.lpst.tol[sd.lpst.tol$Symbol %in% sd.lpst.lps$Symbol, ]
+  common.down = common.down[common.down$Symbol %in% sd.lpst.nil$Symbol, ]
+  common.down1 = sd.lpst.tol[sd.lpst.tol$Symbol %in% common.down$Symbol,]
+  int.down = rownames(common.down)
+  
+  # diff LFC, eg lfc = 0
+  summary.limma.allDEG = data.frame(cbind(
+    c(nrow(e.lpstol.tol[e.lpstol.tol$logFC > 0,]), nrow(e.lpstol.tol[e.lpstol.tol$logFC < 0,])),
+    c(nrow(e.lpstol.lps[e.lpstol.lps$logFC > 0,]), nrow(e.lpstol.lps[e.lpstol.lps$logFC < 0,])),
+    c(nrow(e.lpstol.nil[e.lpstol.nil$logFC > 0,]), nrow(e.lpstol.nil[e.lpstol.nil$logFC < 0,])),
+    c(nrow(e.tol.lps[e.tol.lps$logFC > 0,]), nrow(e.tol.lps[e.tol.lps$logFC < 0,])),
+    c(nrow(e.tol.nil[e.tol.nil$logFC > 0,]), nrow(e.tol.nil[e.tol.nil$logFC < 0,])),
+    c(nrow(e.lps.nil[e.lps.nil$logFC > 0,]), nrow(e.lps.nil[e.lps.nil$logFC < 0,]))))
+  rownames(summary.limma.allDEG) = c("up", "down")
+  colnames(summary.limma.allDEG) = c("LPSTol.Tol", "LPSTol.LPS", "LPSTol.Nil", "Tol.LPS", "Tol.Nil", "LPS.Nil")
+  
+  lfc = 1.5
+  summary.limma.lfc1.5 =   summary.limma.allDEG = data.frame(cbind(
+    c(nrow(e.lpstol.tol[e.lpstol.tol$logFC > lfc,]), nrow(e.lpstol.tol[e.lpstol.tol$logFC < -1*lfc,])),
+    c(nrow(e.lpstol.lps[e.lpstol.lps$logFC > lfc,]), nrow(e.lpstol.lps[e.lpstol.lps$logFC < -1*lfc,])),
+    c(nrow(e.lpstol.nil[e.lpstol.nil$logFC > lfc,]), nrow(e.lpstol.nil[e.lpstol.nil$logFC < -1*lfc,])),
+    c(nrow(e.tol.lps[e.tol.lps$logFC > lfc,]), nrow(e.tol.lps[e.tol.lps$logFC < -1*lfc,])),
+    c(nrow(e.tol.nil[e.tol.nil$logFC > lfc,]), nrow(e.tol.nil[e.tol.nil$logFC < -1*lfc,])),
+    c(nrow(e.lps.nil[e.lps.nil$logFC > lfc,]), nrow(e.lps.nil[e.lps.nil$logFC < -1*lfc,]))))
+  rownames(summary.limma.lfc1.5) = c("up", "down")
+  colnames(summary.limma.lfc1.5) = c("LPSTol.Tol", "LPSTol.LPS", "LPSTol.Nil", "Tol.LPS", "Tol.Nil", "LPS.Nil")
+  
+  lfc = 2
+  summary.limma.lfc2 =   summary.limma.allDEG = data.frame(cbind(
+    c(nrow(e.lpstol.tol[e.lpstol.tol$logFC > lfc,]), nrow(e.lpstol.tol[e.lpstol.tol$logFC < -1*lfc,])),
+    c(nrow(e.lpstol.lps[e.lpstol.lps$logFC > lfc,]), nrow(e.lpstol.lps[e.lpstol.lps$logFC < -1*lfc,])),
+    c(nrow(e.lpstol.nil[e.lpstol.nil$logFC > lfc,]), nrow(e.lpstol.nil[e.lpstol.nil$logFC < -1*lfc,])),
+    c(nrow(e.tol.lps[e.tol.lps$logFC > lfc,]), nrow(e.tol.lps[e.tol.lps$logFC < -1*lfc,])),
+    c(nrow(e.tol.nil[e.tol.nil$logFC > lfc,]), nrow(e.tol.nil[e.tol.nil$logFC < -1*lfc,])),
+    c(nrow(e.lps.nil[e.lps.nil$logFC > lfc,]), nrow(e.lps.nil[e.lps.nil$logFC < -1*lfc,]))))
+  rownames(summary.limma.lfc2) = c("up", "down")
+  colnames(summary.limma.lfc2) = c("LPSTol.Tol", "LPSTol.LPS", "LPSTol.Nil", "Tol.LPS", "Tol.Nil", "LPS.Nil")
+  
+  # Combine the list of all genes across the groups
+  diff.up = c(rownames(filter(toldc.limma@lps.nil, logFC > 0)),
+            rownames(filter(toldc.limma@tol.nil, logFC > 0)), 
+            rownames(filter(toldc.limma@tol.lps, logFC > 0)), 
+            rownames(filter(toldc.limma@lpstol.nil, logFC > 0)), 
+            rownames(filter(toldc.limma@lpstol.lps, logFC > 0)), 
+            rownames(filter(toldc.limma@lpst.tol, logFC > 0)))
+  diff.up = diff.up[!duplicated(diff.up)]
+  length(diff.up)
+
+  diff.down = c(rownames(filter(toldc.limma@lps.nil, logFC < 0)),
+            rownames(filter(toldc.limma@tol.nil, logFC < 0)), 
+            rownames(filter(toldc.limma@tol.lps, logFC < 0)), 
+            rownames(filter(toldc.limma@lpstol.nil, logFC < 0)), 
+            rownames(filter(toldc.limma@lpstol.lps, logFC < 0)), 
+            rownames(filter(toldc.limma@lpst.tol, logFC < 0)))
+  diff.down = diff.down[!duplicated(diff.down)]
+  length(diff.down)
+
+# any dge to exclude
+  diff.any = c(diff.up, diff.down)
+  diff.any = diff.any[!duplicated(diff.any)]
+  length(diff.any)
+
+# genes similar across groups
+  not.diff.all = rownames(dds.cpm)[!(rownames(dds.cpm) %in% diff.any)]
+  not.diff.set =  as.data.frame(edgeR::cpm(dds, log = TRUE))
+  not.diff.set$symbols = rownames(not.diff.set)
+  not.diff.set$entrezid = t.data$genes$ENTREZID
+  not.diff.set$ensembl = t.data$genes$gene_id
+  
+  not.diff.set = filter(not.diff.set, not.diff.set$symbols %in% not.diff.all)
+  not.diff.set = not.diff.set[!is.na(not.diff.set$ensembl),]
+```
+
+ 
+### T-statistics and Z scores 
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+e.rows = c()
+e.rows = as.data.frame(c(rownames(e.lpstol.tol, e.lpstol.lps, e.lpstol.nil)))
+colnames(e.rows) = "genes"
+e.rows = e.rows[!duplicated(e.rows$genes),]
+
+e.all = c()
+e.all = as.data.frame(e.rows)
+colnames(e.all) = "Symbol"
+rownames(e.all) = e.all$Symbol
+
+e.all = merge(e.all, e.lpstol.tol[,c("gene_id", "ENTREZID", "t", "Symbol")], by = "Symbol")
+e.all = merge(e.all, e.lpstol.lps[,c("t", "Symbol")], by = "Symbol")
+e.all = merge(e.all, e.lpstol.nil[,c("t", "Symbol")], by = "Symbol")
+e.all = merge(e.all, e.tol.lps[,c("t", "Symbol")], by = "Symbol")
+e.all = merge(e.all, e.tol.nil[,c("t", "Symbol")], by = "Symbol")
+e.all = merge(e.all, e.lps.nil[,c("t", "Symbol")], by = "Symbol")
+rownames(e.all) = e.all$Symbol
+colnames(e.all) = c("symbol", "ensembl", "entrezid", 
+                    "lpstol.tol", "lpstol.lps", "lpstol.nil", 
+                    "tol.lps", "tol.nil", "lps.nil")
+# View(e.all)
+# write.xlsx(e.all, "csv/t.scores.all.xlsx", sheetName = "all genes")
+
+# Z.scores (individual and avg)
+cal_z_score = function(x){(x - mean(x)) / sd(x)}
+
+Z.scores = c()
+Z.Scores = apply(e.all[,4:9], 2, function(x){qnorm(rank(x)/(nrow(e.all[,4:9])+1))})
+Z.Scores = as.data.frame(Z.Scores)
+Z.Scores = cbind(Z.Scores, e.all$ensembl, e.all$entrezid, e.all$symbol)
+# Z.Scores = Z.Scores[which(is.na(Z.Scores$`e.all$entrezid`) == FALSE),]
+
+# # common set...
+#   lcpm_sig = dds.cpm
+#   lcpm_sig = lcpm_sig[which(rownames(dds.cpm) %in% 
+#                              c(rownames(common.up), rownames(common.down))),]
+#   colnames(lcpm_sig) <- paste(dds$samples$group)
+#   lcpm_sig = data.frame(lcpm_sig)
+# 
+#   clust = data.frame(sample = c(rep(c("LPS.TolDC"), 3), 
+#                                 rep(c("BMDC"), 3), 
+#                                 rep(c("LPS.BMDC"), 3), 
+#                                 rep(c("ToLDC"), 3)))
+#   rownames(clust) = colnames(lcpm_sig)
+#   
+#   lcpm_sig1 = data.frame(t(lcpm_sig))
+#   lcpm_sig1$type = factor(clust$sample)
+#   lcpm_sig1 = lcpm_sig1 %>% mutate(type = fct_relevel(type, 
+#                                   c("BMDC", "TolDC", "LPS.BMDC", "LPS.TolDC")))
+  
+# All individuals
+  lcp.all = dds.cpm 
+  lcp.all = t(apply(lcp.all, 1, cal_z_score))
+  lcp.all = data.frame((lcp.all))
+  lcp.all = lcp.all[,c("N1", "N2", "N3",  
+                                 "L1", "L2", "L3", 
+                                 "T1", "T2", "T3", 
+                                 "LT1", "LT2", "LT3")]
+  lcp.all.avg = lcp.all %>% mutate(N.avg = (N1 + N2 + N3)/3,
+                                           L.avg = (L1 + L2 + L3)/3,
+                                           T.avg = (T1 + T2 + T3)/3,
+                                           LT.avg = (LT1 + LT2 + LT3)/3)
+  lcp.all.avg = lcp.all.avg[order(lcp.all.avg$LT.avg),]
+  
+  #
+  dds.cpm.Z = dds.cpm[which(rownames(dds.cpm) %in% rownames(Z.Scores)),]
+  lcp_sig.all = dds.cpm.Z
+  lcp_sig.all = t(apply(lcp_sig.all, 1, cal_z_score))
+  lcp_sig.all = data.frame((lcp_sig.all))
+  lcp_sig.all = lcp_sig.all[,c("N1", "N2", "N3",  
+                                 "L1", "L2", "L3", 
+                                 "T1", "T2", "T3", 
+                                 "LT1", "LT2", "LT3")]
+  
+  lcp_sig.all.avg = lcp_sig.all %>% mutate(N.avg = (N1 + N2 + N3)/3,
+                                           L.avg = (L1 + L2 + L3)/3,
+                                           T.avg = (T1 + T2 + T3)/3,
+                                           LT.avg = (LT1 + LT2 + LT3)/3)
+  lcp_sig.all.avg = lcp_sig.all.avg[which(rownames(lcp_sig.all.avg) %in% rownames(Z.Scores)),]
+  lcp_sig.all.avg = lcp_sig.all.avg[order(lcp_sig.all.avg$LT.avg),]
+
+# lcp_sig.all.avg = lcp_sig.all %>% mutate(N.avg = (N1 + N2 + N3)/3,
+#                                            L.avg = (L1 + L2 + L3)/3,
+#                                            T.avg = (T1 + T2 + T3)/3,
+#                                            LT.avg = (LT1 + LT2 + LT3)/3)
+# lcp_sig.all.avg = lcp_sig.all.avg[order(lcp_sig.all.avg$LT.avg),]
+# lcp_sig.all.avg = lcp_sig.all.avg[,13:16]
+
+  # Filter as required
+  # lcp_sig.all.avg = lcp_sig.all.avg[which(abs(lcp_sig.all.avg$LT.avg)>1),]
+  # lcp_sig.all.avg = lcp_sig.all.avg[,1:13]
+gc()
+```
+
+Volcano plots
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+enh.vol = function(data, label, pCutoff, lfc){
+  EnhancedVolcano(data,  x = "logFC", y = "adj.P.Val", 
+                  title = label, lab = rownames(data), 
+                  legendPosition = 'bottom',
+                  pCutoff = pCutoff,  FCcutoff =lfc)}
+
+  vol.lpstol.tol = enh.vol(e.lpstol.tol, "LPS_TolDC vs TolDC", 0.05, 1.5)
+  vol.lpstol.lps = enh.vol(e.lpstol.lps, "LPS_TolDC vs LPS", 0.05, 1.5)
+  vol.lpstol.nil = enh.vol(e.lpstol.nil, "LPS_TolDC vs Nil", 0.05, 1.5)
+  vol.tol.lps = enh.vol(e.tol.lps, "TolDC vs LPS", 0.05, 1.5)
+  vol.tol.nil = enh.vol(e.tol.nil, "TolDC vs Nil", 0.05, 1.5)
+  vol.lps.nil = enh.vol(e.lps.nil, "LPS vs Nil", 0.05, 1.5)
+  
+  summary.volcano = ggarrange(vol.lpstol.nil, vol.lpstol.lps,
+                  vol.lpstol.tol, vol.tol.nil, 
+                  vol.tol.lps, vol.lps.nil, 
+                  ncol = 3, nrow = 2, common.legend = TRUE)
+              
+  summary.volcano
+```
+
+Venn diagrams
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+  summary.up = list(rownames(sup.lpst.tol), rownames(sup.lpst.lps), 
+                    rownames(sup.lpst.nil), rownames(sup.tol.lps), 
+                    rownames(sup.tol.nil) , rownames(sup.lps.nil))
+  
+  summary.down = list(rownames(sd.lpst.tol), rownames(sd.lpst.lps), 
+                    rownames(sd.lpst.nil), rownames(sd.tol.lps), 
+                    rownames(sd.tol.nil) , rownames(sd.lps.nil))
+    
+  set.up = ggVennDiagram(summary.up[c(1:3)], label_alpha = 0, colour = "black",
+              category.names = c("LPS.Tol vs BMDC", "LPS.Tol vs LPS", "LPS.Tol vs Tol"),
+              stroke_size = 0.5, set_name_size = 10) + 
+    ggplot2::scale_fill_gradient(low="orange1",high = "coral3") + ggtitle("Upregulated genes")
+  
+  set.down = ggVennDiagram(summary.down[c(1:3)], label_alpha = 0, colour = "black",
+              category.names = c("LPS.Tol vs BMDC", "LPS.Tol vs LPS", "LPS.Tol vs Tol"),
+              stroke_size = 0.5, set_name_size = 10) + 
+    ggplot2::scale_fill_gradient(low="orange1",high = "coral3") + ggtitle("downregulated genes")
+
+```
+
+Heatmaps
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# Organise for Z scores and heatmaps
+  # Individual Z scores
+  p.hmap = pheatmap::pheatmap(lcp_sig.all, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 6, cutree_cols = 4,
+                     treeheight_row = 0, treeheight_col = 0, fontsize_rows = 10)
+  
+  # Avg Z scores
+  p.hmap.avg =  pheatmap::pheatmap(lcp_sig.all.avg, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cutree_cols = 4, 
+                     treeheight_row = 0, treeheight_col = 0, fontsize_rows = 10)
+
+  # Commonly upregulated set
+  lcpm_sig.a = dds.cpm[which(rownames(dds.cpm) %in% rownames(common.up)),]
+  lcpm_sig.Za = t(apply(lcpm_sig.a, 1, cal_z_score))
+  lcpm_sig.Za = data.frame((lcpm_sig.Za))
+  lcpm_sig.Za = lcpm_sig.Za[order(lcpm_sig.Za$LT1, decreasing = TRUE),]
+  
+  # Commonly downregulated set
+  lcpm_sig.b = dds.cpm[which(rownames(dds.cpm) %in% rownames(common.down)),]
+  lcpm_sig.Zb = t(apply(lcpm_sig.b, 1, cal_z_score))
+  lcpm_sig.Zb = data.frame((lcpm_sig.Zb))
+  lcpm_sig.Zb = lcpm_sig.Zb[order(lcpm_sig.Zb$LT1, decreasing = FALSE),]
+
+  # Combine common set and get means
+  lcpm.select = rbind(lcpm_sig.Za, lcpm_sig.Zb)
+  lcpm.select = lcpm.select %>% mutate(LT. = (LT1 + LT2 + LT3)/3, 
+                                       T. = (T1 + T2 + T3)/3,
+                                       L. = (L1 + L2 + L3)/3,
+                                       N. = (N1 + N2 + N3)/3,
+                                       diff1. = LT. - T., 
+                                       diff2. = LT. - L.,
+                                       diff3. = LT. - N., 
+                                       maxdiff = pmax(abs(diff1.), abs(diff2.), abs(diff3.)))
+  # lcpm.select = lcpm.select %>% select(LT., T., L., N., diff1., diff2., diff3., maxdiff)
+  lcpm.select = lcpm.select[order(lcpm.select$maxdiff, decreasing = TRUE),]
+  
+  
+  p.heat.commons = pheatmap::pheatmap(lcpm.select[which(lcpm.select$LT1 > 0)[1:50],1:12], 
+                                      cellwidth = 10, cutree_cols = 4, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, fontsize_rows = 10,
+                     treeheight_row = 0, treeheight_col = 0)
+
+# write.xlsx(lcpm.select..., file = "csv/Zcommon.lpstol.lfc2.xlsx", sheetName = 'up')
+  
+```
+
+### GSEA 
+All DEGs
+```{r, warning = FALSE, message = FALSE,  cache = FALSE, eval = FALSE}
+# later processing
+data(Pathways)
+gene.pvalues = apply(Z.Scores, 1, geneStats)
+gene.zscores = qnorm(gene.pvalues, lower.tail = FALSE)
+
+# GSEA 
+gsea.all = gsea.bp.z(gene.zscores)
+gsea.commom.immune = pickimmune(gsea.commom[[2]])
+# write.xlsx(gsea.commom[[2]], "csv/gsea.common.xlsx", sheetName = "all genes")
+
+# Plots
+# jpeg("figures/gsea.go.all.jpg", width = 600, height = 1000)
+  ggplot(filter(gsea.commom[[2]], log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.go.immune.jpg", width = 600, height = 600)
+  ggplot(filter(gsea.commom.immune, log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.go.cnet.jpg", width = 1200, height = 1200)
+cnetplot(pairwise_termsim(gsea.commom[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = gene.zscores, 
+         node_label = "all", cex_label_category = 1.8)
+# dev.off()
+
+```
+
+Common up/down in LPSTolDC set
+```{r, warning = FALSE, message = FALSE,cache = FALSE, eval = FALSE}
+cutoff = 0
+
+e.up = c()
+e.up = filter(e.lpstol.tol, logFC > cutoff)
+e.up = e.up[e.up$gene_id %in% (filter(e.lpstol.lps, logFC > cutoff)$gene_id), ]
+e.up = e.up[e.up$gene_id %in% (filter(e.lpstol.nil, logFC > cutoff)$gene_id), ]
+
+e.down = c()
+e.down = filter(e.lpstol.tol, logFC < -1*cutoff)
+e.down = e.down[e.down$gene_id %in% (filter(e.lpstol.lps, logFC < -1*cutoff)$gene_id), ]
+e.down = e.down[e.down$gene_id %in% (filter(e.lpstol.nil, logFC < -1*cutoff)$gene_id), ]
+
+e.intersect = c()
+e.intersect = as.data.frame(cbind(e.lpstol.tol[c(rownames(e.up), rownames(e.down)),]$t, 
+                                  e.lpstol.lps[c(rownames(e.up), rownames(e.down)),]$t,
+                                  e.lpstol.nil[c(rownames(e.up), rownames(e.down)),]$t))
+
+rownames(e.intersect) = c(rownames(e.up), rownames(e.down))
+colnames(e.intersect) = c("TolDC", "LPS", "Nil")
+e.intersect$symbol = rownames(e.intersect)
+e.intersect$ensembl = c(e.up$gene_id, e.down$gene_id)
+e.intersect$entrez = c(e.up$ENTREZID, e.down$ENTREZID)
+
+# write.xlsx(e.intersect, "csv/t.scores.all.xlsx", sheetName = "all genes")
+
+# Generate Z-scores from the t-statistics
+Z.scores = c()
+Z.Scores = apply(e.intersect[,1:3], 2, 
+                     function(x){qnorm(rank(x)/(nrow(e.intersect[,1:3])+1))})
+
+data(Pathways)
+gene.pvalues = c()
+gene.pvalues = apply(Z.Scores, 1, geneStats)
+gene.zscores = qnorm(gene.pvalues, lower.tail = FALSE)
+pvalue2sided = 2*pnorm(-abs(gene.zscores))
+Z.Score.Significant = Z.Scores[which(rownames(Z.Scores) %in% 
+                                       names(pvalue2sided %>% subset(pvalue2sided < 0.05))),]
+dim(Z.Score.Significant)
+length(gene.zscores)
+
+# write.xlsx(gene.zscores, "csv/z.scores.LPSTcommon.xlsx")
+
+# generate for ENTREZ versions
+e.intersect1 = e.intersect
+e.intersect1 = e.intersect1[!duplicated(e.intersect$entrez),]
+e.intersect1 = e.intersect1[!is.na(e.intersect1$entrez),]
+rownames(e.intersect1) = e.intersect1$entrez
+
+gene.pvalues.eID = apply(e.intersect1[,1:3], 2, 
+                     function(x){qnorm(rank(x)/(nrow(e.intersect[,1:3])+1))})
+gene.pvalues.eID = apply(gene.pvalues.eID,  1, geneStats)
+gene.zscores.eID = qnorm(gene.pvalues.eID, lower.tail = FALSE)
+
+# GSEA for common
+gsea.commom = gsea.bp.z(gene.zscores)
+gsea.commom.immune = pickimmune(gsea.commom[[2]])
+# write.xlsx(gsea.commom[[2]], "csv/gsea.common.xlsx", sheetName = "all genes")
+
+# Plots
+# jpeg("figures/gsea.go.all.jpg", width = 600, height = 1000)
+  ggplot(filter(gsea.commom[[2]], log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.go.immune.jpg", width = 600, height = 600)
+  ggplot(filter(gsea.commom.immune, log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.go.cnet.jpg", width = 1200, height = 1200)
+cnetplot(pairwise_termsim(gsea.commom[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = gene.zscores, 
+         node_label = "all", cex_label_category = 1.8)
+# dev.off()
+
+emapplot(pairwise_termsim(gsea.commom[[1]]))
+
+# View(filter(gsea.commom[[2]], Pathway.Direction == "Suppressed"))
+```
+
+GSEA-Reactome - common genes
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+gsea.reactome = gsePathway(sort(gene.zscores.eID, decreasing = TRUE), 
+                           organism = "mouse",
+                           pvalueCutoff = 0.05,
+                           pAdjustMethod = "BH", verbose = TRUE)
+
+gsea.reactome@result$Description
+dotplot(gsea.reactome)
+emapplot(pairwise_termsim(gsea.reactome))
+```
+
+### Subsets
+Z scores - subset1 GOI
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+  lcp_sig.all.sub = c()
+  lcp_sig.all.sub = data.frame(t(lcp_sig.all))
+  lcp_sig.all.sub = cbind(group = c("N", "N", "N", "L", "L", "L", 
+                                    "T", "T", "T",  "LT", "LT", "LT" ), 
+                          lcp_sig.all.sub)
+  lcp_sig.all.sub$group = fct_relevel(lcp_sig.all.sub$group, 
+                                      levels = c("N", "L", "T", "LT"))
+  genes.all = data.frame(colnames(lcp_sig.all.sub))
+  colnames(genes.all) = "genes"
+
+  ggplot(lcp_sig.all.sub) + geom_boxplot(aes(x = group,  y = Ccr7)) +
+    theme_bw()# example for boxplots
+  
+  targets = c(genes.all$genes[grep("Tgf", genes.all$genes)], 
+    genes.all$genes[grep("Ido", genes.all$genes)], 
+    genes.all$genes[grep("Il10", genes.all$genes)], 
+    genes.all$genes[grep("Lamp", genes.all$genes)], 
+    genes.all$genes[grep("Irf", genes.all$genes)], 
+    genes.all$genes[grep("S100", genes.all$genes)], 
+    genes.all$genes[grep("Ccr", genes.all$genes)], 
+    genes.all$genes[grep("Ccl", genes.all$genes)], 
+    genes.all$genes[grep("Cxcl", genes.all$genes)], 
+    genes.all$genes[grep("H2.", genes.all$genes)], 
+    genes.all$genes[grep("Casp", genes.all$genes)], 
+    genes.all$genes[grep("Arg", genes.all$genes)],
+    genes.all$genes[grep("Sirp", genes.all$genes)], 
+    genes.all$genes[grep("Nfkb", genes.all$genes)],
+    genes.all$genes[grep("Bcl", genes.all$genes)], 
+    genes.all$genes[grep("Il", genes.all$genes)], 
+    genes.all$genes[grep("Tlr", genes.all$genes)], 
+    genes.all$genes[grep("Muc", genes.all$genes)], 
+    genes.all$genes[grep("Hmox", genes.all$genes)], 
+    genes.all$genes[grep("Dusp", genes.all$genes)], 
+    genes.all$genes[grep("Ppar", genes.all$genes)])
+    
+  # targets = c(targets, "Cyp27a1", "Cyp24a1", "Ccr7", "Mucl1", "Map7", "Cd40", "Cd80", "Cd86", "Cd274", "Cd47")
+  
+  targets = targets[-grep("Rik", targets)]
+  targets = sort(targets)
+  
+  lcp_sig.all.sub1 = lcp_sig.all.sub[,c("group", targets)]
+  lcp_sig.all.sub1 = lcp_sig.all.sub1[,-1]
+  lcp_sig.all.sub1 = data.frame(t(lcp_sig.all.sub1))
+
+  p.heat.sub = pheatmap::pheatmap(lcp_sig.all.sub1[which(lcp_sig.all.sub1$LT1 > 0),], cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+```
+
+Z scores - subset2 GOI
+```{r, warning = FALSE, message = FALSE,  cache = FALSE, eval = FALSE}
+  lcp_sig.all.sub = c()
+  lcp_sig.all.sub = data.frame(t(lcp_sig.all))
+  lcp_sig.all.sub = cbind(group = c("N", "N", "N", "L", "L", "L", 
+                                    "T", "T", "T",  "LT", "LT", "LT" ), 
+                          lcp_sig.all.sub)
+  lcp_sig.all.sub$group = fct_relevel(lcp_sig.all.sub$group, 
+                                      levels = c("N", "L", "T", "LT"))
+  genes.all = data.frame(colnames(lcp_sig.all.sub))
+  colnames(genes.all) = "genes"
+
+  ggplot(lcp_sig.all.sub) + geom_boxplot(aes(x = group,  y = Ccr7)) +
+    theme_bw()# example for boxplots
+    
+  targets = c(targets, "Cyp27a1", "Cyp24a1", "Ccr7", "Mucl1", "Map7", "Cd40", "Cd80", "Cd86", "Cd274", "Cd47")
+  targets = sort(targets)
+  
+  lcp_sig.all.sub1 = lcp_sig.all.sub[,c("group", targets)]
+  lcp_sig.all.sub1 = lcp_sig.all.sub1[,-1]
+  lcp_sig.all.sub1 = data.frame(t(lcp_sig.all.sub1))
+
+  p.heat.sub.2 = pheatmap::pheatmap(lcp_sig.all.sub1[which(lcp_sig.all.sub1$LT1 > 0),], cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+```
+
+Keep the Z-scores which are simultaneously abs LPS-TolDC > Tol/LPS/NIL simultaneously
+ie. what's unique about LPSTolDCs
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+Z.Scores1 = Z.Scores[order(-Z.Scores$lpstol.lps, -Z.Scores$tol.lps),]
+# write.xlsx(Z.Scores1, "csv/Z.scores.allsigDEG.xlsx")
+
+fcth = 2
+list.Z2.all.up = Z.Scores1[(Z.Scores1$lpstol.tol>fcth & 
+                              Z.Scores1$lpstol.lps>fcth &
+                              Z.Scores1$lpstol.nil>fcth),]
+
+list.Z2.all.down = Z.Scores1[(Z.Scores1$lpstol.tol< -1*fcth & 
+                                Z.Scores1$lpstol.lps< -1*fcth &
+                                Z.Scores1$lpstol.nil< -1*fcth),]
+
+listZ2.all = rbind(list.Z2.all.up,list.Z2.all.down)
+make.table2 = cbind(listZ2.all$`e.all$symbol`,listZ2.all[,c("lpstol.lps", "tol.lps")])
+gt(make.table2)
+View(make.table2)
+
+ pheatmap::pheatmap(t(lcp_sig.all[rownames(lcp_sig.all) %in% rownames(listZ2.all),]), 
+                       cellheight = 8, cellwidth = 10,cutree_rows = 4,
+                       color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                       treeheight_col = 0, treeheight_row = 0, fontsize_col = 10)
+ 
+# tiff("figures/DEG.lpstol.tol.vs.lps.tiff", width = 40, height = 20, units = "cm", res = 300)
+# dev.off()
+
+```
+
+Abs of LPSTol > LPS and Tol > LPS (ie. tolDC whether activated or not, diff to LPS), cutoff = 1
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# For genes which Z (same direction) for both tol and lps-tol compared to LPS
+cutoff = 1
+set1 = c()
+set1 = Z.Scores
+set1 = set1 %>% filter((lpstol.lps > cutoff & tol.lps > cutoff)|
+                         (lpstol.lps < -1*cutoff & tol.lps < -1*cutoff))
+
+# get significant z-scores for gsea
+data(Pathways)
+gene.pvalues.set1 = c()
+gene.pvalues.set1 = apply(set1[,c("lpstol.lps", "tol.lps")], 1, geneStats)
+gene.zscores.set1 = qnorm(gene.pvalues.set1, lower.tail = FALSE)
+gsea.set1 = gsea.bp.z(gene.zscores.set1)
+
+# For heatmap of Z-scores
+lcp_sig.all.set1 = lcp_sig.all[which(rownames(lcp_sig.all) %in% rownames(set1)),]
+  pheatmap::pheatmap(lcp_sig.all.set1, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 6, cutree_cols = 4,
+                     treeheight_row = 0, treeheight_col = 0, fontsize_rows = 10)
+
+  # Plots-GSEA (all)
+  ggplot(gsea.set1[[2]], aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    # geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 12)) +xlab("-log10 of P-value") +
+    ylab("Description") + 
+    ggtitle("GSEA-GO Analysis") + 
+    facet_grid(~Pathway.Direction)
+
+  # sub-PLOTS
+  ggplot(filter(gsea.set1[[2]], log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP abs(Z)>1 for LPS.Tol and Tol diff direction to LPS") +   
+    facet_grid(~Pathway.Direction)
+
+  ggplot(filter(gsea.commom.immune, log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+
+  cnetplot(pairwise_termsim(gsea.set1[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = gene.zscores.set1, 
+         node_label = "all", cex_label_category = 1.3)
+```
+
+Abs of LPSTol > LPS and Tol > LPS (ie. tolDC whether activated or not, diff to LPS), cutoff = 2
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+cutoff = 2
+set2 = c()
+set2 = Z.Scores
+set2 = set2 %>% filter((lpstol.lps > cutoff & tol.lps > cutoff) |
+                         (lpstol.lps < -1*cutoff & tol.lps < -1*cutoff ))
+
+lcp_sig.all.sub1.set2 = lcp_sig.all[which(rownames(lcp_sig.all) %in% rownames(set2)),]
+
+data(Pathways)
+gene.pvalues.set2 = c()
+gene.pvalues.set2 = apply(set2[,c("lpstol.lps", "tol.lps")], 1, geneStats)
+gene.zscores.set2 = qnorm(gene.pvalues.set2, lower.tail = FALSE)
+length(gene.zscores.set2)
+  
+  pheatmap::pheatmap(lcp_sig.all.sub1.set2, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cutree_cols = 4, cluster_cols = FALSE,
+                     treeheight_row = 0, treeheight_col = 0, fontsize_rows = 10)
+  
+  gsea.set1.set2 = gsea.bp.z(gene.zscores.set2)
+  
+  ggplot(gsea.set1[[2]], aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    # geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 12)) +xlab("-log10 of P-value") +
+    ylab("Description") + 
+    ggtitle("GSEA-GO Analysis") + 
+    facet_grid(~Pathway.Direction)
+
+  cnetplot(pairwise_termsim(gsea.set1.set2[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = gene.zscores.set2, 
+         node_label = "all", cex_label_category = 1.3)
+
+# For heatmap of Z-scores
+  targets = c(genes.all$genes[grep("Tgf", genes.all$genes)], 
+    genes.all$genes[grep("Ido", genes.all$genes)], 
+    genes.all$genes[grep("Il10", genes.all$genes)], 
+    genes.all$genes[grep("Lamp", genes.all$genes)], 
+    genes.all$genes[grep("Notch", genes.all$genes)], 
+    genes.all$genes[grep("Irf", genes.all$genes)], 
+    genes.all$genes[grep("Pecam", genes.all$genes)], 
+    genes.all$genes[grep("Icam", genes.all$genes)], 
+    genes.all$genes[grep("Havcr", genes.all$genes)], 
+    genes.all$genes[grep("Hif", genes.all$genes)], 
+    genes.all$genes[grep("Hmox", genes.all$genes)], 
+    genes.all$genes[grep("Gpx", genes.all$genes)], 
+    genes.all$genes[grep("Flt", genes.all$genes)], 
+    genes.all$genes[grep("Fox", genes.all$genes)], 
+    genes.all$genes[grep("S100", genes.all$genes)], 
+    genes.all$genes[grep("Ccr", genes.all$genes)], 
+    genes.all$genes[grep("Cd300", genes.all$genes)], 
+    genes.all$genes[grep("Ccl", genes.all$genes)], 
+    genes.all$genes[grep("Cxcl", genes.all$genes)], 
+    genes.all$genes[grep("H2.", genes.all$genes)], 
+    genes.all$genes[grep("Cd1", genes.all$genes)], 
+    genes.all$genes[grep("Cd2", genes.all$genes)], 
+    genes.all$genes[grep("Cd3", genes.all$genes)], 
+    genes.all$genes[grep("Cd4", genes.all$genes)], 
+    genes.all$genes[grep("Cd5", genes.all$genes)], 
+    genes.all$genes[grep("Cd6", genes.all$genes)], 
+    genes.all$genes[grep("Cd7", genes.all$genes)], 
+    genes.all$genes[grep("Cd8", genes.all$genes)], 
+    genes.all$genes[grep("Cd9", genes.all$genes)], 
+    genes.all$genes[grep("Casp", genes.all$genes)], 
+    genes.all$genes[grep("Arg", genes.all$genes)],
+    genes.all$genes[grep("Cflar", genes.all$genes)], 
+    genes.all$genes[grep("Cyp27a", genes.all$genes)], 
+    genes.all$genes[grep("Cyp24a", genes.all$genes)], 
+    # genes.all$genes[grep("Map", genes.all$genes)], 
+    genes.all$genes[grep("Nfl", genes.all$genes)], 
+    genes.all$genes[grep("Itga", genes.all$genes)], 
+    genes.all$genes[grep("Cd47", genes.all$genes)], 
+    genes.all$genes[grep("H2.", genes.all$genes)], 
+    genes.all$genes[grep("Sirp", genes.all$genes)], 
+    genes.all$genes[grep("Bcat", genes.all$genes)], 
+    genes.all$genes[grep("Nfkb", genes.all$genes)],
+    genes.all$genes[grep("Bcl", genes.all$genes)], 
+    genes.all$genes[grep("Il", genes.all$genes)], 
+    genes.all$genes[grep("Tlr", genes.all$genes)], 
+    genes.all$genes[grep("Tnf", genes.all$genes)], 
+    genes.all$genes[grep("Tmem", genes.all$genes)], 
+    genes.all$genes[grep("Ifn", genes.all$genes)], 
+    genes.all$genes[grep("Ppar", genes.all$genes)])
+  
+  targets = targets[-grep("Rik", targets)]
+  targets = sort(targets)
+  
+  lcp_sig.all.sub1 = lcp_sig.all.sub[,c("group", targets)]
+  lcp_sig.all.sub1 = lcp_sig.all.sub1[,-1]
+  lcp_sig.all.sub1 = data.frame(t(lcp_sig.all.sub1))
+
+  lcp_sig.all.sub1.set2a = lcp_sig.all.sub1[which(rownames(lcp_sig.all.sub1) %in% rownames(set2)),]
+ jpeg("figures/heatmap.top100immunerelatedset2.jpg", width = 400, height = 800)
+  pheatmap::pheatmap(lcp_sig.all.sub1.set2a, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cutree_cols = 4, cluster_cols = FALSE,
+                     treeheight_row = 0, treeheight_col = 0, fontsize_rows = 10)
+  dev.off()
+```
+
+Abs of LPSTol > LPS and Tol > LPS (ie. tolDC whether activated or not, diff to LPS), cutoff = 0
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# For genes which are DEG in same direction both LPS-TOl and TolDC vs LPS
+# Then filter the DGE list of LPS.Tol vs Tol for these genes - GSEA
+cutoff = 0
+set3 = c()
+set3 = Z.Scores
+set3 = set3 %>% filter((lpstol.lps > cutoff & tol.lps > cutoff) |
+                         (lpstol.lps < -1*cutoff & tol.lps < -1*cutoff ))
+
+set3.e = e.lpstol.tol[which(rownames(e.lpstol.tol) %in% rownames(set3)),]
+set3.e = set3.e[which(abs(set3.e$logFC) >2),]
+
+genelist = set3.e$logFC
+names(genelist) = rownames(set3.e)
+
+  genelist = sort(genelist, decreasing = TRUE)
+  gse.temp = gseGO(geneList=genelist, 
+               ont ="BP", 
+               keyType = "SYMBOL",
+               minGSSize = 10, 
+               maxGSSize = 800, 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH",
+               verbose = TRUE,
+               seed = 42,
+               OrgDb = org.Mm.eg.db)
+  
+  gse = as.data.frame(gse.temp)
+  gse = gse %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(gse, NES)
+  gse$Pathway.Direction = cut(-1*gse$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  colnames(gse)[4] = "Count"
+  gse = removecrap(gse)
+  
+ # jpeg("figures/gsea.lpstol.tol.selected.same.dir.vslps.jpg", width = 600, height = 800)
+    ggplot(gse, aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ggtitle("GSEA-GO:BP") + 
+    facet_grid(~Pathway.Direction)
+  # dev.off()
+  
+  # jpeg("figures/gsea.lpstol.tol.selected.same.dir.vslps.UP.jpg", width = 600, height = 600)
+    ggplot(gse[which(gse$Pathway.Direction == "Upregulated" & gse$setSize > 20),], aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 12)) +xlab("-log10 of P-value") +
+    ggtitle("GSEA-GO Analysis") + 
+    facet_grid(~Pathway.Direction)
+  # dev.off()
+  
+   # jpeg("figures/cnet.lpstol.tol.selected.same.dir.vslps.UP.jpg", width = 600, height = 600)
+  cnetplot(pairwise_termsim(gse.temp), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = genelist, 
+         node_label = "all", cex_label_category = 1.3)
+  # dev.off()
+  
+# write.xlsx(set2, "csv/lpstol.up.vs.rest.xlsx", append = TRUE, sheetName = "Abs.Z.2")
+# filter((lpstol.lps > 0 &  lpstol.tol > 0 & lpstol.nil > 0)|
+                      # (lpstol.lps < 0 &  lpstol.tol < 0 & lpstol.nil < 0))
+```
+
+
+### INDIVIDUAL COMPARISONS
+LPS vs Nil
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# by FC
+topFC.lps.nil = e.lps.nil %>% arrange(desc(logFC))
+topFC.lps.nil = topFC.lps.nil[c(1:10, (nrow(topFC.lps.nil)-9):nrow(topFC.lps.nil)),]
+
+# by p-value
+topP.lps.nil = filter(e.lps.nil, logFC > 2)  %>% arrange(adj.P.Val)
+topP.lps.nil = topP.lps.nil[c(1:10),]
+topP.lps.nil1 = filter(e.lps.nil, logFC < -2)  %>% arrange(adj.P.Val)
+topP.lps.nil = rbind(topP.lps.nil, topP.lps.nil1[1:10,])
+
+# create summary excel
+# write.xlsx(topFC.lps.nil, "csv/lps.nil.summary.xlsx", sheetName = "top by LFC")
+# write.xlsx(topP.lps.nil, "csv/lps.nil.summary.xlsx", append = TRUE, sheetName = "top by p.adj")
+
+# GSEA-GO
+glist.lps.nil = e.lps.nil$logFC
+names(glist.lps.nil) = rownames(e.lps.nil)
+gsea.lps.nil = gsea.bp.z(glist.lps.nil)
+gsea.lps.nil.immune = pickimmune(gsea.lps.nil[[2]])
+
+# write to summary excel
+# write.xlsx(gsea.lps.nil[[1]]@result, "csv/lps.nil.summary.xlsx", append = TRUE, sheetName = "gsea.go.bp")
+
+# plots
+# jpeg("figures/gsea.lps.nil.immune.jpg", width = 600, height = 1600)
+  ggplot(filter(gsea.lps.nil.immune, log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.lps.nil.jpg", width = 1000, height = 1000)
+cnetplot(pairwise_termsim(gsea.lps.nil[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.lps.nil, 
+         node_label = "all", cex_label_category = 1.5)
+# dev.off()
+
+# saveRDS(gsea.lps.nil, "RDS/gsea.lps.nil.RDS")
+```
+
+Tol vs Nil
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# by FC
+topFC.tol.nil = e.tol.nil %>% arrange(desc(logFC))
+topFC.tol.nil = topFC.tol.nil[c(1:10, (nrow(topFC.tol.nil)-9):nrow(topFC.tol.nil)),]
+
+# by p-value
+topP.tol.nil = filter(e.tol.nil, logFC > 2)  %>% arrange(adj.P.Val)
+topP.tol.nil = topP.tol.nil[c(1:10),]
+topP.tol.nil1 = filter(e.tol.nil, logFC < -2)  %>% arrange(adj.P.Val)
+topP.tol.nil = rbind(topP.tol.nil, topP.tol.nil1[1:10,])
+
+# create summary excel
+# write.xlsx(topFC.tol.nil, "csv/tol.nil.summary.xlsx", sheetName = "top by LFC")
+# write.xlsx(topP.tol.nil, "csv/tol.nil.summary.xlsx", append = TRUE, sheetName = "top by p.adj")
+
+# GSEA-GO
+glist.tol.nil = e.tol.nil[which(abs(e.tol.nil$logFC) >0),]$logFC
+names(glist.tol.nil) = rownames(e.tol.nil[which(abs(e.tol.nil$logFC) >0),])
+gsea.tol.nil = gsea.bp.z(glist.tol.nil)
+gsea.tol.nil.immune = pickimmune(gsea.tol.nil[[2]])
+
+# write to summary excel
+# write.xlsx(gsea.tol.nil[[1]]@result, "csv/tol.nil.summary.xlsx", append = TRUE, sheetName = "gsea.go.bp")
+
+# plots
+# jpeg("figures/gsea.tol.nil.jpg", width = 600, height = 600)
+  ggplot(filter(gsea.tol.nil[[2]][which(gsea.tol.nil[[2]]$setSize > 50),], log.p.adj > 0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.tol.nil1.jpg", width = 2000, height = 2000)
+cnetplot(pairwise_termsim(gsea.tol.nil[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.tol.nil, showCategory =15,
+         node_label = "all", cex_label_category = 1.5)
+# dev.off()
+
+# saveRDS(gsea.tol.nil, "RDS/gsea.tol.nil.RDS")
+```
+
+Tol vs LPS
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# by FC
+topFC.tol.lps = e.tol.lps %>% arrange(desc(logFC))
+topFC.tol.lps = topFC.tol.lps[c(1:10, (nrow(topFC.tol.lps)-9):nrow(topFC.tol.lps)),]
+
+# by p-value
+topP.tol.lps = filter(e.tol.lps, logFC > 2)  %>% arrange(adj.P.Val)
+topP.tol.lps = topP.tol.lps[c(1:10),]
+topP.tol.lps1 = filter(e.tol.lps, logFC < -2)  %>% arrange(adj.P.Val)
+topP.tol.lps = rbind(topP.tol.lps, topP.tol.lps1[1:10,])
+
+# create summary excel
+# write.xlsx(topFC.tol.lps, "csv/tol.lps.summary.xlsx", sheetName = "top by LFC")
+# write.xlsx(topP.tol.lps, "csv/tol.lps.summary.xlsx", append = TRUE, sheetName = "top by p.adj")
+
+# GSEA-GO
+glist.tol.lps = e.tol.lps$logFC
+names(glist.tol.lps) = rownames(e.tol.lps)
+gsea.tol.lps = gsea.bp.z(glist.tol.lps)
+gsea.tol.lps.immune = pickimmune(gsea.tol.lps[[2]])
+
+# write to summary excel
+# write.xlsx(gsea.tol.lps[[1]]@result, "csv/tol.lps.summary.xlsx", append = TRUE, sheetName = "gsea.go.bp")
+
+filter(gsea.tol.lps.immune, Pathway.Direction == "Upregulated")
+
+# plots
+# jpeg("figures/gsea.tol.lps.immune.jpg", width = 600, height = 1000)
+  ggplot(filter(gsea.tol.lps.immune, log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.tol.lps.jpg", width = 1200, height = 1000)
+cnetplot(pairwise_termsim(gsea.tol.lps[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.tol.lps, 
+         node_label = "all", cex_label_category = 1.5)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.tol.lps1.jpg", width = 1200, height = 1000)
+cnetplot(pairwise_termsim(gsea.tol.lps[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.tol.lps, 
+         node_label = "gene", cex_label_category = 1.5)
+# dev.off()
+
+# saveRDS(gsea.tol.lps, "RDS/gsea.tol.lps.RDS")
+```
+
+LPS-Tol vs Tol
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# by FC
+topFC.Ltol.tol = e.lpstol.tol %>% arrange(desc(logFC))
+topFC.Ltol.tol = topFC.Ltol.tol[c(1:10, (nrow(topFC.Ltol.tol)-9):nrow(topFC.Ltol.tol)),]
+
+# by p-value
+topP.Ltol.tol = filter(e.lpstol.tol, logFC > 2)  %>% arrange(adj.P.Val)
+topP.Ltol.tol = topP.Ltol.tol[c(1:10),]
+topP.Ltol.tol1 = filter(topP.Ltol.tol, logFC < -2)  %>% arrange(adj.P.Val)
+topP.Ltol.tol = rbind(topP.Ltol.tol, topP.Ltol.tol1[1:10,])
+
+# create summary excel
+# write.xlsx(topFC.Ltol.tol, "csv/Ltol.tol.summary.xlsx", sheetName = "top by LFC")
+# write.xlsx(topP.Ltol.tol, "csv/Ltol.tol.summary.xlsx", append = TRUE, sheetName = "top by p.adj")
+
+# GSEA-GO
+glist.Ltol.tol = e.lpstol.tol$logFC
+names(glist.Ltol.tol) = rownames(e.lpstol.tol)
+gsea.Ltol.tol = gsea.bp.z(glist.Ltol.tol)
+gsea.Ltol.tol.immune = pickimmune(gsea.Ltol.tol[[2]])
+
+# write to summary excel
+# write.xlsx(gsea.Ltol.tol[[1]]@result, "csv/Ltol.tol.summary.xlsx", append = TRUE, sheetName = "gsea.go.bp")
+
+# plots
+# jpeg("figures/gsea.Ltol.tol.immune.jpg", width = 600, height = 1000)
+  ggplot(filter(gsea.Ltol.tol.immune, log.p.adj>0), aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = Count)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.Ltol.tol.jpg", width = 1200, height = 2000)
+cnetplot(pairwise_termsim(gsea.Ltol.tol[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.Ltol.tol, showCategory = 10,
+         node_label = "all", cex_label_category = 1.5)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.Ltol.tol1.jpg", width = 1200, height = 1000)
+cnetplot(pairwise_termsim(gsea.Ltol.tol[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.Ltol.tol, 
+         node_label = "gene", cex_label_category = 1.5)
+# dev.off()
+
+# saveRDS(gsea.Ltol.tol, "RDS/gsea.Ltol.tol.RDS")
+```
+
+LPS-Tol vs LPS
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# by FC
+topFC.Ltol.lps = e.lpstol.lps %>% arrange(desc(logFC))
+topFC.Ltol.lps = topFC.Ltol.lps[c(1:10, (nrow(topFC.Ltol.lps)-9):nrow(topFC.Ltol.lps)),]
+View(topFC.Ltol.lps)
+
+# by p-value
+topP.Ltol.lps = filter(e.lpstol.lps, logFC > 2)  %>% arrange(adj.P.Val)
+topP.Ltol.lps = topP.Ltol.lps[c(1:10),]
+topP.Ltol.lps1 = filter(topP.Ltol.lps, logFC < -2)  %>% arrange(adj.P.Val)
+topP.Ltol.lps = rbind(topP.Ltol.lps, topP.Ltol.lps1[1:10,])
+View(topP.Ltol.lps)
+
+# create summary excel
+# write.xlsx(topFC.Ltol.lps, "csv/Ltol.lps.summary.xlsx", sheetName = "top by LFC")
+# write.xlsx(topP.Ltol.lps, "csv/Ltol.lps.summary.xlsx", append = TRUE, sheetName = "top by p.adj")
+
+# GSEA-GO
+glist.Ltol.lps = e.lpstol.lps$logFC
+names(glist.Ltol.lps) = rownames(e.lpstol.lps)
+gsea.Ltol.lps = gsea.bp.z(glist.Ltol.lps)
+gsea.Ltol.lps.immune = pickimmune(gsea.Ltol.lps[[2]])
+
+# write to summary excel
+# write.xlsx(gsea.Ltol.lps[[1]]@result, "csv/Ltol.lps.summary.xlsx", append = TRUE, sheetName = "gsea.go.bp")
+
+
+  gse = as.data.frame(gsea.Ltol.lps[[1]])
+  gse = gse %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(gse, NES)
+  gse$Pathway.Direction = cut(-1*gse$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  colnames(gse)[4] = "Count"
+  
+  gse = gse[-which(gse$Description == "heart valve formation"),]
+
+# plots
+# jpeg("figures/gsea.Ltol.lps.jpg", width = 600, height = 400)
+  ggplot(gse, aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.Ltol.lps.jpg", width = 1200, height = 1000)
+cnetplot(pairwise_termsim(gsea.Ltol.lps[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.Ltol.lps, showCategory = 6,
+         node_label = "all", cex_label_category = 1.3)
+# dev.off()
+
+# saveRDS(gsea.Ltol.lps, "RDS/gsea.Ltol.lps.RDS")
+```
+
+LPS-Tol vs NIL
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# by FC
+topFC.Ltol.nil = e.lpstol.nil %>% arrange(desc(logFC))
+topFC.Ltol.nil = topFC.Ltol.nil[c(1:10, (nrow(topFC.Ltol.nil)-9):nrow(topFC.Ltol.nil)),]
+View(topFC.Ltol.nil)
+
+# by p-value
+topP.Ltol.nil = filter(e.lpstol.nil, logFC > 2)  %>% arrange(adj.P.Val)
+topP.Ltol.nil = topP.Ltol.nil[c(1:10),]
+topP.Ltol.nil1 = filter(topP.Ltol.nil, logFC < -2)  %>% arrange(adj.P.Val)
+topP.Ltol.nil = rbind(topP.Ltol.nil, topP.Ltol.nil1[1:10,])
+
+# create summary excel
+# write.xlsx(topFC.Ltol.nil, "csv/Ltol.nil.summary.xlsx", sheetName = "top by LFC")
+# write.xlsx(topP.Ltol.nil, "csv/Ltol.nil.summary.xlsx", append = TRUE, sheetName = "top by p.adj")
+
+# GSEA-GO
+glist.Ltol.nil = e.lpstol.nil$logFC
+names(glist.Ltol.nil) = rownames(e.lpstol.nil)
+gsea.Ltol.nil = gsea.bp.z(glist.Ltol.nil)
+gsea.Ltol.nil.immune = pickimmune(gsea.Ltol.nil[[2]])
+
+# write to summary excel
+# write.xlsx(gsea.Ltol.nil[[1]]@result, "csv/Ltol.nil.summary.xlsx", append = TRUE, sheetName = "gsea.go.bp")
+
+# plots
+# jpeg("figures/gsea.Ltol.nil.jpg", width = 600, height = 1600)
+  ggplot(gsea.Ltol.nil[[2]], aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.Ltol.nil.immune.jpg", width = 600, height = 1200)
+  ggplot(gsea.Ltol.nil.immune, aes(x = log.p.adj, y = Description)) + 
+    geom_point(aes(color= p.adjust, size = setSize)) + theme_bw() + 
+    geom_vline(xintercept  = 0, linetype = "dashed")+
+    scale_color_viridis_c(guide=guide_colorbar(reverse=TRUE)) + 
+    theme(axis.text.y = element_text(size = 10)) +xlab("-log10 of P-value") +
+    ylab("Description") + ggtitle("GSEA-GO:BP") + facet_grid(~Pathway.Direction)
+# dev.off()
+
+# jpeg("figures/gsea.cnet.Ltol.nil.jpg", width = 1200, height = 1000)
+cnetplot(pairwise_termsim(gsea.Ltol.nil[[1]]), categorySize = "p.adjust", 
+         colorEdge = TRUE, foldChange = glist.Ltol.nil, showCategory = 10,
+         node_label = "all", cex_label_category = 1.3)
+# dev.off()
+
+# saveRDS(gsea.Ltol.nil, "RDS/gsea.Ltol.nil.RDS")
+```
+
+
+### Other analysis
+PDL1:CD86
+```{r, warning = FALSE, message = FALSE,  cache = FALSE, eval = FALSE}
+# PDL1:CD86 as differential between groups
+test = rbind(e.lpstol.tol["Cd274",], # CD274 = pdl1
+             e.lpstol.nil["Cd274",],
+             # e.lpstol.lps["Cd274",],
+             e.tol.lps["Cd274",],
+             e.tol.nil["Cd274",],
+             e.lps.nil["Cd274",])
+rownames(test) = c("LTol.Tol", "LTol.Nil", "Tol.Lps",  "Tol.Nil", "Lps.Nil")
+test$id = rownames(test)
+test$logFC = test$logFC+1+abs(min(test$logFC))
+
+test1 = rbind(e.lpstol.tol["Cd86",], 
+             e.lpstol.nil["Cd86",],
+             e.tol.lps["Cd86",],
+             e.tol.nil["Cd86",],
+             e.lps.nil["Cd86",])
+rownames(test1) = c("LTol.Tol", "LTol.Nil","Tol.Lps",  "Tol.Nil", "Lps.Nil")
+test1$id = rownames(test1)
+test1$logFC = test1$logFC+1+abs(min(test1$logFC))
+
+test2 = data.frame((test$logFC)/(test1$logFC))
+rownames(test2) = c("LTol.Tol", "LTol.Nil", "Tol.Lps",  "Tol.Nil", "Lps.Nil")
+test2$id = rownames(test2)
+colnames(test2) = c("logFC", "id")
+
+plot.pdl1 = ggplot(test, aes(x=test$id, y = test$logFC)) + 
+  geom_dotplot(binaxis = "y", stackdir = "center") + 
+  ggtitle("Cd274") + ylab("Relative Expression")
+                           
+plot.cd86 = ggplot(test1, aes(x=test1$id, y = test1$logFC)) + geom_dotplot(binaxis = "y", stackdir = "center") +
+  ggtitle("Cd86") +  ylab("Relative Expression")
+
+plot.ratio = ggplot(test2, aes(x=test2$id, y = test2$logFC)) + geom_dotplot(binaxis = "y", stackdir = "center")+
+  ggtitle("Cd274/Cd86") + ylab("ratio")
+
+plot.pdl1.cd86 = ggarrange(plot.pdl1, plot.cd86, plot.ratio, nrow = 1)
+plot.pdl1.cd86
+
+### Check via Z-scores
+z.pdl1.cd86 = lcp_sig.all.avg[c("Cd274", "Cd86"),]
+z.pdl1.cd86 = exp(z.pdl1.cd86)
+z.pdl1.cd86 = rbind(z.pdl1.cd86, ratio = z.pdl1.cd86[1,]/z.pdl1.cd86[2,])
+z.pdl1.cd86 = data.frame(t(z.pdl1.cd86))
+ggplot(z.pdl1.cd86, aes(x = rownames(z.pdl1.cd86), y = ratio)) + geom_dotplot(binaxis = "y", stackdir = "center")
+
+# specific markers of interest to us
+specific.set = c("Tgfb3", "Arg1", "Ido1", "Mucl1", "Map7", 
+                 "Cyp24a1", "Cyp27a1", "Hmox1", "Il12a", "Il12b")
+specific.set1 = rbind(cbind(e.lpstol.tol[specific.set,], group = "lpstol.tol"),
+                      cbind(e.lpstol.lps[specific.set,], group ="lpstol.lps"), 
+                      cbind(e.lpstol.nil[specific.set,], group ="lpstol.nil"), 
+                      cbind(e.tol.nil[specific.set,], group ="tol.nil"))
+specific.set1 = specific.set1[,c("logFC", "adj.P.Val", "group")]
+View(specific.set1)
+```
+
+Signature list for Spatial (simple metrics)
+```{r, warning = FALSE, message = FALSE, cache = FALSE, eval = FALSE}
+# 1. for signature list, logically lpstol vs lps-bmdc makes most sense as one would expect there to be influx of activated DCs following reperfusion. Filter to have +ve FC genes, easiest to use in detection
+signature.base = e.lpstol.lps
+signature.base$mix.metric = -1*signature.base$logFC*log10(signature.base$adj.P.Val)
+signature.base = signature.base[signature.base$logFC>0,]
+
+signature.top30.p.value = signature.base[order(signature.base$adj.P.Val),]
+signature.top30.p.value = signature.top30.p.value[1:30,]
+
+signature.top30.lfc = signature.base[order(-signature.base$logFC),]
+signature.top30.lfc = signature.top30.lfc[1:30,]
+
+signature.top30.metric = signature.base[order(-signature.base$mix.metric),]
+signature.top30.metric = signature.top30.metric[1:30,]
+
+signature.top30.set1 = data.frame(cbind(signature.top30.p.value$Symbol, 
+                        signature.top30.lfc$Symbol, 
+                        signature.top30.metric$Symbol))
+colnames(signature.top30.set1) = c("p.value", "lfc", "lfc*log10(p.value)")
+
+# Set 2 - use the LPSTol up against everything else simultaneously
+signature.base = common
+signature.base$mix.metric = -1*signature.base$logFC*log10(signature.base$adj.P.Val)
+signature.base = signature.base[signature.base$logFC>0,]
+
+signature.top30.p.value = signature.base[order(signature.base$adj.P.Val),]
+signature.top30.p.value = signature.top30.p.value[1:30,]
+
+signature.top30.lfc = signature.base[order(-signature.base$logFC),]
+signature.top30.lfc = signature.top30.lfc[1:30,]
+
+signature.top30.metric = signature.base[order(-signature.base$mix.metric),]
+signature.top30.metric = signature.top30.metric[1:30,]
+
+signature.top30.set2 = data.frame(cbind(signature.top30.p.value$Symbol, 
+                        signature.top30.lfc$Symbol, 
+                        signature.top30.metric$Symbol))
+colnames(signature.top30.set2) = c("p.value.common", "lfc.common", "lfc*log10(p.value).common")
+
+signature = cbind(signature.top30.set1, signature.top30.set2)
+
+saveRDS(signature, "rds/signature.toldc.rds")
+
+# other top30 lists, # change signature.base as appropriate
+signature.base = e.tol.nil
+signature.base$mix.metric = -1*signature.base$logFC*log10(signature.base$adj.P.Val)
+signature.base = signature.base[signature.base$logFC>0,]
+
+signature.top30.p.value = signature.base[order(signature.base$adj.P.Val),]
+signature.top30.p.value = signature.top30.p.value[1:30,]
+
+signature.top30.lfc = signature.base[order(-signature.base$logFC),]
+signature.top30.lfc = signature.top30.lfc[1:30,]
+
+signature.top30.metric = signature.base[order(-signature.base$mix.metric),]
+signature.top30.metric = signature.top30.metric[1:30,]
+
+signature.top30 = data.frame(cbind(signature.top30.p.value$Symbol, 
+                        signature.top30.lfc$Symbol, 
+                        signature.top30.metric$Symbol))
+colnames(signature.top30) = c("p.value", "lfc", "lfc*log10(p.value)")
+View(signature.top30)
+
+# ADD IN SCOREMATRIX RESULTS
+```
+
+Compare to human, monocyte derived AADC (https://www.frontiersin.org/articles/10.3389/fimmu.2021.733231/full)
+```{r, warning = FALSE, message = FALSE,  cache = FALSE, eval = FALSE}
+ourdata = e.lpstol.tol[e.lpstol.tol$logFC>0,]
+metaanalysis = read.xlsx("csv/aadc.list.up.xlsx", sheetName = "Sheet1")
+overlap.aadc = ourdata[ourdata$Symbol %in% metaanalysis$Btg3,]
+overlap.aadc = overlap.aadc[,c(3,7)]
+percent = 100*nrow(overlap.aadc)/nrow(metaanalysis)
+View(overlap.aadc)
+
+diff.list = metaanalysis[!(metaanalysis$Btg3 %in% rownames(overlap.aadc)),]
+
+check.lps.nil = e.lps.nil
+check.lps.nil = check.lps.nil[check.lps.nil$logFC>0,]
+just.cos.lps = check.lps.nil[check.lps.nil$Symbol %in% metaanalysis$Btg3,]
+just.cos.lps = just.cos.lps[,c(3,7)]
+View(just.cos.lps)
+
+unique.overlap = overlap.aadc[!(rownames(overlap.aadc) %in% rownames(just.cos.lps)),]
+
+ourdata = e.lpstol.tol[e.lpstol.tol$logFC>0,]
+ourss = ourdata[!(ourdata$Symbol %in% e.lpstol.lps[e.lpstol.lps$logFC>0,]$Symbol),]
+ourss = ourss[!(ourss$Symbol %in% e.lpstol.nil[e.lpstol.nil$logFC>0,]$Symbol),]
+ourss = ourss[!(ourss$Symbol %in% e.lps.nil[e.lps.nil$logFC>0,]$Symbol),]
+ourss = ourss[!(ourss$Symbol %in% e.tol.nil[e.tol.nil$logFC>0,]$Symbol),]
+ourss = ourss[!(ourss$Symbol %in% e.tol.lps[e.tol.lps$logFC>0,]$Symbol),]
+
+ourss = ourss[order(-ourss$logFC),]
+View(ourss[1:25,])
+write.xlsx(ourss, "csv/ourss.xlsx")
+```
+
+Compare to mregDC (https://www.nature.com/articles/s41586-020-2134-y/figures/1)
+```{r, warning = FALSE, message = FALSE,  cache = FALSE, eval = FALSE}
+mregDC.umi = c("Ccr7", "Fscn1", "Il4i1", "Socs2", "Relb")
+mregDC.mat = c("Cd40", "Cd80", "Cd86", "Cd83", "Relb")
+mregDC.reg = c("Cd274", "Cd200",  "Fas", "Aldh1a2", "Socs1", "Socs2")
+mregDC.adap = c("Pdcd1lg2", genes.all$genes[grep("Tlr", genes.all$genes)])
+mregDC.mig = c("Ccr7", "Myo1g", "Cxcl16", "Adam8", "Icam1", "Fscn1", "Marcks", "Marcksl1")
+  
+# Prep subset data to plot
+  lcp_sig.all.sub = c()
+  lcp_sig.all.sub = data.frame(t(lcp.all))
+  lcp_sig.all.sub = cbind(group = c("N", "N", "N", "L", "L", "L", 
+                                    "T", "T", "T",  "LT", "LT", "LT" ),  
+                          lcp_sig.all.sub)
+  lcp_sig.all.sub$group = fct_relevel(lcp_sig.all.sub$group, 
+                                      levels = c("N", "L", "T", "LT"))
+  genes.all = data.frame(colnames(lcp_sig.all.sub))
+  colnames(genes.all) = "genes"
+  
+  lcp_sig.all.sub.umi = lcp_sig.all.sub[,c(mregDC.umi)]
+  lcp_sig.all.sub.umi = data.frame(t(lcp_sig.all.sub.umi))
+  
+  lcp_sig.all.sub.mat = lcp_sig.all.sub[,c(mregDC.mat)]
+  lcp_sig.all.sub.mat = data.frame(t(lcp_sig.all.sub.mat))
+  
+  lcp_sig.all.sub.reg = lcp_sig.all.sub[,c(mregDC.reg)]
+  lcp_sig.all.sub.reg = data.frame(t(lcp_sig.all.sub.reg))
+  
+  lcp_sig.all.sub.adap = lcp_sig.all.sub[,c(mregDC.adap)]
+  lcp_sig.all.sub.adap = data.frame(t(lcp_sig.all.sub.adap))
+  
+  lcp_sig.all.sub.mig = lcp_sig.all.sub[,c(mregDC.mig)]
+  lcp_sig.all.sub.mig = data.frame(t(lcp_sig.all.sub.mig))
+
+  pheatmap::pheatmap(lcp_sig.all.sub.umi, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+  
+  pheatmap::pheatmap(lcp_sig.all.sub.mat, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+  
+  pheatmap::pheatmap(lcp_sig.all.sub.reg, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+    
+  pheatmap::pheatmap(lcp_sig.all.sub.adap, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+  
+  pheatmap::pheatmap(lcp_sig.all.sub.mig, cellwidth = 10, 
+                     color = colorRampPalette(c("blue", "navy", "white", "tan2", "orange"))(10), 
+                     fontsize_row = 10, cluster_cols = F,
+                     treeheight_row = 0, treeheight_col = 0)
+  
+# conclusion - Doesn't match
+  
+```
+
+
