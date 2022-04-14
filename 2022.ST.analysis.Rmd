@@ -1,0 +1,1330 @@
+---
+title: "Spatial mKid"
+author: "Jen Li"
+output: html_document
+---
+
+# Set up and load data (processed and clustered)
+
+Setup scripts for packages and custom functions
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# set working directory
+  setwd("~/Documents/Project data - R files/SpatialT/")
+  knitr::opts_chunk$set(echo = FALSE, cache = FALSE, message = FALSE, warning = FALSE)
+  
+# load pkgs, pkg.versions & custom functions
+  source("setup/setup.spatial.R")
+
+# record of pkgs
+  writeLines(capture.output(sessionInfo()), "setup/current.packages.txt")
+  write.table(pkg.versions, "setup/package.versions.txt", append = FALSE, 
+            sep = " ", dec = ".", row.names = TRUE, col.names = TRUE)
+
+set.seed(42)
+gc()
+```
+
+Spatial data
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+
+  se = readRDS("rds/se.0.3.rds") # main spatial mouse AKI files (res = 0.3)
+    
+  # Un-comment if want to load all for GSEA etc
+      # knitr::opts_chunk$set(echo = FALSE, cache = FALSE)
+      # source("setup/processed.spatial.R")
+
+  # change from raw data pre processing
+      # source("setup/2022.ST.preprocess.rmd")
+
+  # library(TENxVisiumData)
+    # spe = MouseKidneyCoronal()    # saveRDS(spe, "rds/10xmouseKidney.rds")
+    # spe = readRDS("rds/10xmouseKidney.rds")
+```
+
+Reference scRNA mouse kidney datasets - load one
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# Currently used
+sc.IRI = readRDS("rds/uniIRI.merged.sct.d0.d1.d2.ok.RDS")
+sc.IRI.d1 = readRDS("rds/sc.uIRI.d1.RDS")
+sc.IRI.d2 = readRDS("rds/sc.uIRI.d2.RDS")
+```
+
+Other available scRefs if need to trial - don't load all at once
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+###############################################
+# Reference scRNA: GSE10758 - Park/Sustak, Science, 2018
+###############################################
+
+# my seurat version
+  sc.park.seurat = readRDS("rds/sc.park.seurat.ok.RDS")
+  glimpse(sc.park.seurat)
+  p1 = DimPlot(sc.park.seurat, reduction = "tsne", group = "cellType")
+  p1 # -->  use sc.park.seurat, able tp reproduce paper's figure
+  
+  # 1. Park (science 2018) - developmental/healthy mouse model 
+      # DO NOT RUN unless need regenerate my seurat files
+        # knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
+        # source("setup/Parkraw.R")
+        # sc.park.meta = readRDS("rds/park.meta.data.RDS")
+        # sc.park.seurat.raw = readRDS("rds/park.seurat.raw.RDS")
+
+###############################################
+# Reference scRNA: GSE139506
+###############################################
+
+# source("setup/gse139506raw.R")
+  sc.IRI.d0 = readRDS("rds/sc.uIRI.d0.RDS")
+  sc.IRI.d1 = readRDS("rds/sc.uIRI.d1.RDS")
+  sc.IRI.d2 = readRDS("rds/sc.uIRI.d2.RDS")
+  sc.IRI = readRDS("rds/uniIRI.merged.sct.d0.d1.d2.ok.RDS") # seurat-integration 
+  sc.d1.d2 = readRDS("rds/uniIRI.merged.sct.d1.d2.ok.RDS") # seurat-integration 
+
+  # p2 = DimPlot(sc.IRI, reduction = "umap", group = "Idents") + 
+  #   ggtitle("Integrated control+d1+d2")
+  # p3 = DimPlot(sc.IRI.d2, reduction = "umap", group = "Idents") + ggtitle("Day 2 post IRI")
+  # p4 = DimPlot(sc.d1.d2, reduction = "umap", group = "Idents") + ggtitle("Day 1+2 post IRI")
+  # DimPlot(sc.IRI.d1, reduction = "umap", group = "Idents")
+
+###############################################
+# Reference scRNA: Combine GSE139506 and GSE10758
+###############################################
+# Unilateral IRI
+sc.SCT = readRDS("rds/park.uniIRI.merged.sct.ok.RDS") # seurat-integration 
+  # source("setup/merge.scref.R")
+
+  # scuIRI.d0 = readRDS("rds/sc.uIRI.d0.RDS")
+  # scuIRI.d1 = readRDS("rds/sc.uIRI.d1.RDS")
+  # scuIRI.d2 = readRDS("rds/sc.uIRI.d2.RDS")
+  # scanchors.comb = readRDS("rds/sc.uIRI.combined.ok.RDS")
+
+  # Compare to no batch correction by integration
+    # sc.unSCT = readRDS("rds/park.uniIRI.merged.raw.RDS")
+    # sc.unSCT = FindVariableFeatures(sc.unSCT)
+    # sc.unSCT = SCTransform(sc.unSCT)
+    # sc.unSCT = RunPCA(sc.unSCT, verbose = FALSE)
+    # sc.unSCT = RunTSNE(sc.unSCT, verbose = FALSE)
+    # sc.unSCT = RunUMAP(sc.unSCT, reduction = "pca", dims = 1:20)
+    # DimPlot(sc.unSCT, reduction = "umap", label = TRUE, group.by = "orig.ident") 
+    # DimPlot(sc.unSCT, reduction = "pca", label = TRUE, group.by = "orig.ident") 
+    # 
+    # p1 = DimPlot(sc.unSCT, reduction = "umap", label = TRUE, group.by = "orig.ident") + ggtitle("Pre-integration")
+    # p2 = DimPlot(sc.SCT, reduction = "umap", label = TRUE, group.by = "orig.ident")  + ggtitle("Post-integration")
+    # tiff("figures/scref.pre.post.integration.tiff", res = 300, units = "cm", height = 20, width = 40)
+    # p1 - p2
+    # dev.off()
+
+
+gc()
+
+###############################################
+# Reference scRNA: GSE109774 - Tabula Muris
+###############################################
+  # harry's prepared sce data
+  sc.mouse.aging = readRDS("scref/harry_processed/sce_TabulaMuris.rds") #sce
+```
+
+Again going back to the humphries snRNA data - run rest of it overnight
+```{r, warning = FALSE, message = FALSE, echo = FALSE, cache = FALSE, eval = FALSE}
+data.fam = c()
+data.meta = c()
+data.fam = getGEO(filename = 'scref/GSE139107/GSE139107_family.soft.gz')
+data.meta= read.table(gzfile('scref/GSE139107/GSE139107_MouseIRI.metadata.txt.gz'))
+
+data.con = c()
+data.con = readRDS("scref/GSE139107/datacon.rds")
+data.con = AddMetaData(object = data.con, metadata = data.meta)
+
+data.12 = c()
+data.12 = readRDS("scref/data12.rds")
+data.12 = AddMetaData(object = data.12, metadata = data.meta)
+
+data.4 = c()
+data.4 = readRDS("scref/data4.rds")
+data.4 = AddMetaData(object = data.4, metadata = data.meta)
+
+data.48 = c()
+data.48 = readRDS("scref/data48.rds")
+data.48 = AddMetaData(object = data.48, metadata = data.meta)
+
+sc.merged.all = merge(data.con, y = c(data.4, data.12, data.48),
+                      add.cell.ids = c("d0", "d0.4", "d0.12", "d2"),
+                      project = "GSE139107.0h.4h.12h.48h")
+
+sc.merged.all = SplitObject(sc.merged.all, split.by = "orig.ident")
+sc.merged.all = lapply(X = sc.merged.all, FUN = SCTransform)
+gc()
+
+features = SelectIntegrationFeatures(object.list = sc.merged.all, nfeatures = 3000)
+sc.merged.all = PrepSCTIntegration(object.list = sc.merged.all, anchor.features = features)
+gc()
+
+saveRDS(sc.merged.all, "rds/inprogress.RDS")
+saveRDS(features, "rds/inprogress.features.RDS")
+
+scanchors = FindIntegrationAnchors(object.list = sc.merged.all,
+                                   normalization.method = "SCT",
+                                   anchor.features = features)
+
+sc.merged.all = IntegrateData(anchorset = scanchors, normalization.method = "SCT")
+gc()
+
+sc.merged.all = RunPCA(sc.merged.all, verbose = FALSE)
+sc.merged.all = RunTSNE(sc.merged.all, verbose = FALSE)
+sc.merged.all = RunUMAP(sc.merged.all, reduction = "pca", dims = 1:20)
+
+gc()
+```
+
+Kirita PNAS 
+```{r, warning = FALSE, message = FALSE, echo = FALSE, cache = FALSE, eval = FALSE}
+library(GEOquery)
+
+gse1 = c()
+data.fam = c()
+data.meta = c()
+data.fam = getGEO(filename = 'scref/GSE139107/GSE139107_family.soft.gz')
+data.meta= read.table(gzfile('scref/GSE139107/GSE139107_MouseIRI.metadata.txt.gz'))
+
+data.con.k = c()
+data.con.k = readRDS("scref/GSE139107/datacon.rds")
+data.con.k = AddMetaData(object = data.con, metadata = data.meta)
+
+data.12 = c()
+data.12 = readRDS("scref/data12.rds")
+data.12 = AddMetaData(object = data.12, metadata = data.meta)
+
+data.4 = c()
+data.4 = readRDS("scref/data4.rds")
+data.4 = AddMetaData(object = data.4, metadata = data.meta)
+
+data.48 = c()
+data.48 = readRDS("scref/data48.rds")
+data.48 = AddMetaData(object = data.48, metadata = data.meta)
+
+
+```
+
+McMahon, PNAS 2021 - https://www.pnas.org/content/118/27/e2026684118
+```{r, warning = FALSE, message = FALSE, echo = FALSE, cache = FALSE, eval = FALSE}
+gse = getGEO("GSE171417", GSEMatrix = TRUE)
+gse1 = read.delim(gzfile("scref/GSE171417/GSE171417_Metadata.txt.gz"))
+gse2 = read.delim(gzfile("scref/GSE171417/GSE171417_Mouse_control_UMIcounts.txt.gz"))
+gse3 = read.delim(gzfile("scref/GSE171417/GSE171417_Mouse_IRI_UMIcounts.txt.gz"))
+
+# Make into S4 seurat object
+gse4 = CreateSeuratObject(counts = gse2,
+                          project = "GSE171417",
+                          min.cells = 3, min.features = 200)
+levels(as.factor(gse4$orig.ident))
+
+gse5 = CreateSeuratObject(counts = gse3,
+                          project = "GSE171417",
+                          min.cells = 3, min.features = 200)
+levels(as.factor(gse5$orig.ident))
+```
+
+Yao data #GSE174324 - https://onlinelibrary.wiley.com/doi/full/10.1002/advs.202103675
+```{r, warning = FALSE, message = FALSE, echo = FALSE, cache = FALSE, eval = FALSE}
+gse = getGEO("GSE174324", GSEMatrix = TRUE)
+gse1 = getGEOSuppFiles("GSE174324")
+
+yao1 = read.delim(gzfile("scref/GSE174324/GSE174324-GPL21273_series_matrix.txt.gz"))
+tab.yao = untar("scref/GSE174324/GSE174324_RAW.tar", exdir = "scref/GSE174324")
+
+# Kidney files at 0, 1 and 3 days
+tab.yao1 = ReadMtx(mtx = 'scref/GSE174324/GSM5291821_KM-1_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291821_KM-1_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291821_KM-1_features.tsv.gz')
+s.yao1 = CreateSeuratObject(counts = tab.yao1)
+s.yao1@meta.data$orig.ident = "Kidney1"
+
+tab.yao0 = ReadMtx(mtx = 'scref/GSE174324/GSM5291820_KM-0_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291820_KM-0_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291820_KM-0_features.tsv.gz')
+s.yao0 = CreateSeuratObject(counts = tab.yao0)
+s.yao0@meta.data$orig.ident = "Kidney0"
+
+tab.yao3 = ReadMtx(mtx = 'scref/GSE174324/GSM5291822_KM-3_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291822_KM-3_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291822_KM-3_features.tsv.gz')
+s.yao3 = CreateSeuratObject(counts = tab.yao3)
+s.yao3@meta.data$orig.ident = "Kidney3"
+
+# Blood
+tab.yao4 = ReadMtx(mtx = 'scref/GSE174324/GSM5291824_B-1_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291824_B-1_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291824_B-1_features.tsv.gz')
+s.yao4 = CreateSeuratObject(counts = tab.yao4)
+s.yao4@meta.data$orig.ident = "Blood1"
+
+tab.yao5 = ReadMtx(mtx = 'scref/GSE174324/GSM5291823_MB-0_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291823_MB-0_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291823_MB-0_features.tsv.gz')
+s.yao5 = CreateSeuratObject(counts = tab.yao5)
+s.yao5@meta.data$orig.ident = "Blood0"
+
+tab.yao6 = ReadMtx(mtx = 'scref/GSE174324/GSM5291825_MB-3_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291825_MB-3_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291825_MB-3_features.tsv.gz')
+s.yao6 = CreateSeuratObject(counts = tab.yao6)
+s.yao6@meta.data$orig.ident = "Blood3"
+
+# Spleen
+tab.yao7 = ReadMtx(mtx = 'scref/GSE174324/GSM5291827_S-1_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291827_S-1_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291827_S-1_features.tsv.gz')
+s.yao7 = CreateSeuratObject(counts = tab.yao7)
+s.yao7@meta.data$orig.ident = "Spleen1"
+
+tab.yao8 = ReadMtx(mtx = 'scref/GSE174324/GSM5291826_S-0_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291826_S-0_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291826_S-0_features.tsv.gz')
+s.yao8 = CreateSeuratObject(counts = tab.yao8)
+s.yao8@meta.data$orig.ident = "Spleen0"
+
+tab.yao9 = ReadMtx(mtx = 'scref/GSE174324/GSM5291828_S-3_matrix.mtx.gz',
+                   cells = 'scref/GSE174324/GSM5291828_S-3_barcodes.tsv.gz',
+                   features = 'scref/GSE174324/GSM5291828_S-3_features.tsv.gz')
+s.yao9 = CreateSeuratObject(counts = tab.yao9)
+s.yao9@meta.data$orig.ident = "Spleen3"
+
+ids = c("K1", "K0", "K3", "B1", "B0", "B3", "S1", "S0", "S3")
+
+yao.all = merge(s.yao1,
+                y = c(s.yao0, s.yao3, 
+                      s.yao4, s.yao5, s.yao6, 
+                      s.yao7, s.yao8, s.yao9), 
+                add.cell.ids = ids) # to compare integrated and non integrated sets
+
+```
+
+Janosevic 2021 - https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE107585
+```{r, warning = FALSE, message = FALSE, echo = FALSE, cache = FALSE, eval = FALSE}
+library(GEOquery)
+gse = getGEO("GSE151658", GSEMatrix = TRUE)
+gse1 = getGEOSuppFiles("GSE151658")
+
+gse1.temp = gzfile("scref/GSE151658/GSE151658_integrated.0h.1h_4h_16h_27h_36h_48h.rds.gz", "rb")
+gse1 = readRDS(gse1.temp)
+
+# Make into S4 seurat object
+gse2 = CreateSeuratObject(counts = gse1, 
+                          project = "GSE107585", 
+                          min.cells = 3, min.features = 200)
+
+```
+
+
+# Cell ID detection
+
+### Cell label transfer
+
+Set sc.ref and use seurat to integrate anchors from sc to spatial data
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# Basic combination to find compositions
+sc.ref = sc.IRI  # change this
+
+### keep outside function, save space with se return
+  DefaultAssay(se)  =  "SCT"
+  anchors.1 = FindTransferAnchors(reference = sc.ref, 
+                                  query = se, 
+                                  normalization.method = "SCT")
+  
+  predictions.assay.1 = TransferData(anchorset = anchors.1, 
+                                   refdata = sc.ref$Idents, 
+                                   slot = "counts",
+                                   prediction.assay = TRUE,
+                                   weight.reduction = se[["pca"]], 
+                                   dims = 1:30)
+  
+  se[["predictions.1"]] = predictions.assay.1
+  DefaultAssay(se)  =  "predictions.1"
+  gc()
+```
+
+Use data generated by the anchor transfer above to check per cluster and per cell type relative distributions
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# Extract cell labels for spots
+  predictions.metric = data.frame(predictions.assay.1@data)
+  predictions.metric = cbind(data.frame(rowSum = rowSums(predictions.metric)), predictions.metric)
+  predictions.metric = rbind(colSum = data.frame(t(colSums(predictions.metric))) ,predictions.metric)
+  predictions.metric[1,1] = NA
+  # 
+  # hist(predictions.metric$rowSum[2:nrow(predictions.metric)]) # expression for each cell label
+  # hist(predictions.metric$CTGCACCTGGAACCGC.1_1) # example for one spot
+  # hist(t(predictions.metric[1,2:ncol(predictions.metric)])) # sum of rel expressions for each spot
+
+  # cell fractions back to spot and cluster details
+  spot.cell = data.frame(t(se@assays$predictions.1@data))
+  spot.cell = cbind(cluster = NA, spot.cell)
+  add.cluster = data.frame(se$seurat_clusters)
+  rownames(spot.cell) = rownames(add.cluster)
+  spot.cell$cluster = add.cluster$se.seurat_clusters
+  
+  # cluster composition
+  clust = c()
+  cell.table = c()
+  for (i in 1:length(levels(spot.cell$cluster))){
+    j = as.numeric(levels(spot.cell$cluster)[i])
+    clust[[i]] = spot.cell[spot.cell$cluster == j,]
+    cell.table[[i]] = round(colSums(clust[[i]][,2:ncol(clust[[i]])]), 2)
+    # store = cbind(store, store[[i]])
+  }
+  
+  cell.table = data.frame(cell.table)
+  colnames(cell.table) = paste0("cluster",levels(spot.cell$cluster))
+  cell.table = cell.table[1:(nrow(cell.table)-1),] # remove bottom row, which is summary
+  
+  # Distribution of cell types across spots
+  cell.table.type = cell.table
+  for (i in 1:nrow(cell.table.type)){
+    cell.table.type[i,] = 100*cell.table.type[i,]/rowSums(cell.table.type)[i]
+    if (cell.table.type[i,] == "NaN") {
+      cell.table.type[i,] = 0 }
+  }
+  
+  rowSums(cell.table.type) # check
+  cell.table.type = cbind(cell = rownames(cell.table.type), cell.table.type)
+  cell.table.type1 = melt(cell.table.type, id = "cell")
+  colnames(cell.table.type1) = c("cell", "cluster", "pc")
+  
+  where.cells.found = ggplot(cell.table.type1, 
+                             aes(fill = cluster, y = cell, x = pc)) +
+    geom_bar(stat = "identity", colour = "black") + 
+    ggtitle("For each cell type - cluster distribution") + theme_bw()
+    
+  # Relative composition of cell types per spots
+  cell.table.spot = cell.table
+  for (i in 1:ncol(cell.table.spot)){
+    cell.table.spot[,i] = 100*cell.table.spot[,i]/colSums(cell.table.spot)[i]
+    if (cell.table.spot[,i] == "NaN") {
+      cell.table.spot[,i] = 0 }
+  }
+  
+  colSums(cell.table.spot) # check
+  cell.table.spot = cbind(cell = rownames(cell.table.spot), cell.table.spot)
+  cell.table.spot1 = melt(cell.table.spot, id = "cell")
+  colnames(cell.table.spot1) = c("cell", "cluster", "pc")
+  
+  within.each.cluster = ggplot(cell.table.spot1, 
+                               aes(fill = cell, y = cluster, x = pc)) +
+    geom_bar(stat = "identity", colour = "black") + 
+    ggtitle("For each cluster - relative cell type") + theme_bw()
+ 
+  # Plot across original H&E
+  cols = c("cornsilk", "coral", "coral2", "darkred")
+  cells = levels(as.factor(sc.IRI.d1$Idents))
+  cell.label.1 = ST.FeaturePlot(se, indices = 1, grid.ncol = length(cells), 
+                                features = cells, value.scale = "all", cols = cols)
+  cell.label.2 = ST.FeaturePlot(se, indices = 2, grid.ncol = length(cells), 
+                                features = cells, value.scale = "all", cols = cols)
+  cell.label.3 = ST.FeaturePlot(se, indices = 3, grid.ncol = length(cells), 
+                                features = cells, value.scale = "all", cols = cols)
+  cell.label.4 = ST.FeaturePlot(se, indices = 4, grid.ncol = length(cells), 
+                                features = cells, value.scale = "all", cols = cols)
+  cell.label.5 = ST.FeaturePlot(se, indices = 5, grid.ncol = length(cells), 
+                                features = cells, value.scale = "all", cols = cols)
+  cell.label.6 = ST.FeaturePlot(se, indices = 6, grid.ncol = length(cells), 
+                                features = cells, value.scale = "all", cols = cols)
+  
+  spat.plot = ggarrange(cell.label.1, cell.label.2, cell.label.3, 
+            cell.label.4, cell.label.5, cell.label.6, 
+            nrow = 6, common.legend = TRUE)
+  gc()
+  
+```
+
+Save images from cell label transfer analysis
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+
+pie1 = where.cells.found + coord_polar("y", start=0)
+pie2 = within.each.cluster + coord_polar("y", start=0)
+
+# change file name for images
+  tiff("figures/sc.iri.d1.comb.spat.plot.tiff", units = "cm", res = 300, height = 30, width = 50)
+  spat.plot
+  dev.off()
+  
+  tiff("figures/sc.iri.d1.comb.distributions.tiff", units = "cm", res = 300, height = 30, width = 50)
+  where.cells.found - within.each.cluster
+  dev.off()
+  
+  tiff("figures/sc.iri.comb.distributions.pie.tiff", units = "cm", res = 300, height = 30, width = 50)
+  pie1 - pie2
+  dev.off()
+  
+```
+
+
+### Spatial deconvolution using SPOTlight
+Set up and marker determination 
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+sc.ref = sc.IRI.d2 # make celltype = Idents
+
+# Variance modelling
+sc.ref = as.SingleCellExperiment(sc.ref)
+dec = modelGeneVar(sc.ref)
+hvg = getTopHVGs(dec, n = 3000) # get top 3000 genes
+
+plot(dec$mean, dec$total, xlab="Normalised expression", ylab="Variance")
+curve(metadata(dec)$trend(x), col = "blue", add = TRUE)
+
+# determine marker genes - in this case, we'll use AUC >= 0.8
+colLabels(sc.ref) = colData(sc.ref)$Idents
+genes = !grepl(pattern = "^Rp[l|s]|Mt", x = rownames(sc.ref))
+
+source("setup/scoreMarkers.R")  #scoreMarker function modified
+markers = scoreMarkers(sc.ref, subset.row = genes)
+
+markers.filter = lapply(names(markers), function(i) {
+    x = markers[[i]]
+    x = x[x$mean.AUC > 0.8, ] # keep if AUC > 0.8
+    x = x[order(x$mean.AUC, decreasing = TRUE), ] 
+    x$gene = rownames(x)  # Add gene and cluster id
+    x$cluster = i
+    data.frame(x)})
+
+markers.df = do.call(rbind, markers.filter)
+
+# Cell down sampling
+idx = split(seq(ncol(sc.ref)), sc.ref$Idents) # split indices by identity
+n_cells = 100 # upper limit
+cs_keep = lapply(idx, function(i) {
+    n = length(i)
+    if (n < n_cells)
+        n_cells = n
+    sample(i, n_cells)})
+
+sc.ref = sc.ref[, unlist(cs_keep)]
+
+# Deconvolution
+res = SPOTlight(
+    x = sc.ref, 
+    y = se,
+    groups = as.character(sc.ref$Idents),
+    mgs = markers.df,
+    hvg = hvg,
+    weight_id = "mean.AUC",
+    group_id = "cluster",
+    gene_id = "gene")
+    
+    # saveRDS(res, "rds/decon.sciri.d2.RDS")
+
+# Extract data for visualisation/QC
+mat = res$mat # Extract deconvolution matrix
+colnames(mat) = levels(as.factor(sc.ref$Idents))
+res$NMF # Extract NMF model fit
+
+# Topic profiles
+plotTopicProfiles(x = res$NMF, y = sc.ref$Idents, facet = FALSE, 
+                  min_prop = 0.01, ncol = 1) + theme(aspect.ratio = 1)
+
+plotTopicProfiles( x = res$NMF, y = sc.ref$Idents,facet = TRUE, 
+                   min_prop = 0.01, ncol = 6)
+
+# higher value = more relevant for the topic of the gene learned for each topic
+sign =  basis(res$NM)
+colnames(sign) = paste0("Topic", seq_len(ncol(sign)))
+head(sign)
+
+# spatial correlation matrix
+plotCorrelationMatrix(mat)
+
+# co-localisation - see which cell types have stronger edges between them (likely to find in the same spot)
+plotInteractions(mat, which = "heatmap", metric = "prop")
+plotInteractions(mat, which = "heatmap", metric = "jaccard")
+plotInteractions(mat, which = "network")
+
+# Visualise cell types as a piechart
+ct = colnames(mat)
+mat[mat<0.1] = 0
+
+paletteVignette = c( "#000000", "#004949", "#009292", "#ff6db6", "#ffb6db", 
+                     "#490092", "#006ddb", "#b66dff", "#6db6ff", "#b6dbff", 
+                     "#920000", "#924900", "#db6d00", "#24ff24", "#ffff6d")
+pal = colorRampPalette(paletteVignette)(length(ct))
+names(pal) = ct
+```
+
+
+THIS WORKS
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+x = se@tools$Staffli@meta.data
+x = x[,5:6]
+colnames(x) = c("coord_x", "coord_y")
+decon.barcodes = merge(x, mat, by = 0, all = TRUE)
+
+# Plot
+    p + scatterpie::geom_scatterpie(
+        data = decon.barcodes,
+        aes(x = coord_x,
+            y = abs(coord_y - ymax)),
+        cols = colnames(mat),
+        color = NA,
+        alpha = 1,
+        pie_scale = 0.4,
+        ...) +
+        theme_void() + 
+        theme(legend.key.size = unit(0.5, "lines")) 
+  
+        str(se)
+```
+
+
+Residuals
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+spe$res_ss = res[[2]][colnames(spe)]
+xy = spatialCoords(spe)
+spe$x = xy[, 1]
+spe$y = xy[, 2]
+ggcells(spe, aes(x, y, color = res_ss)) +
+    geom_point() +
+    scale_color_viridis_c() +
+    coord_fixed() +
+    theme_bw()
+```
+
+
+# For publication - simple plots
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+s1 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 1, 
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s2 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 2, 
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s3 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 3, 
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s4 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 4,
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s5 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 5,
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s6 = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 6,
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+jpeg("figures/simple.clusters.jpg", width = 800, height = 400)
+ST.FeaturePlot(object = se, features = "seurat_clusters", indices = c(1,3),
+               pt.size = 2, legend.align = "bottom", ncol = 3,
+               value.scale = "all", dark.theme = F) + theme_cleantable()
+dev.off()
+
+jpeg("figures/simple.clusters1.jpg", width = 400, height = 400)
+DimPlot(se, reduction = "umap", label = TRUE, label.size = 7) + theme_pubr() + NoLegend()
+dev.off()
+
+jpeg("figures/simple.clusters2.jpg", width = 700, height = 300)
+DimPlot(se, reduction = "umap", label = TRUE, label.size = 7, split.by = "treatment") + theme_pubr() + NoLegend()
+dev.off()
+
+p.slides = ggarrange(s1, s2, s3,  s4, s5, s6,  nrow = 6, ncol = 1, legend = "right", common.legend = TRUE) 
+
+p.umap = DimPlot(se, reduction = "umap", split.by = "treatment",ncol = 3, 
+                 label = TRUE) +theme_pubr(legend = "right")
+p.umap1 = DimPlot(se, reduction = "umap", label = TRUE) + theme_pubr() + NoLegend()
+
+
+DotPlot(se, 
+        features = c("Havcr1", "Lcn2", "Krt20",  "Myc", "Cryab", "Hspa1a",  "Nphs1", "Nphs2", 
+                     "Lrp2", "Hnf4a", "Slc5a2", "Slc5a12", "Slc7a13", 
+                     "Aqp1", "Slc12a1", "Slc12a3", "Calb1",  "Slc26a4", "Scnn1b", "Atp6v1g3", 
+                     "Flt1", "FPdgfrb", "Ptprc")) + RotatedAxis() + scale_colour_viridis()
+
+```
+
+# Pathway analysis (GSEA) for the different clusters and prep for publication
+
+Combine GSEA results for cluster vs rest for combined samples
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = TRUE, eval = FALSE}
+gc()
+
+clust0vr = clustall(se.markers.all.0, 0)
+clust1vr = clustall(se.markers.all.0, 1)
+clust2vr = clustall(se.markers.all.0, 2)
+clust3vr = clustall(se.markers.all.0, 3)
+clust4vr = clustall(se.markers.all.0, 4)
+clust5vr = clustall(se.markers.all.0, 5)
+clust6vr = clustall(se.markers.all.0, 6)
+clust7vr = clustall(se.markers.all.0, 7)
+clust8vr = clustall(se.markers.all.0, 8)
+clust9vr = clustall(se.markers.all.0, 9)
+
+# write.xlsx(clust0vr, file = paste0("csv/clusters_vs_rest.xlsx"), sheetName= "C.0") 
+# write.xlsx(clust1vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE,  sheetName= "C.1") 
+# write.xlsx(clust2vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.2") 
+# write.xlsx(clust3vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.3") 
+# write.xlsx(clust4vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.4") 
+# write.xlsx(clust5vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.5") 
+# write.xlsx(clust6vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.6") 
+# write.xlsx(clust7vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.7") 
+# write.xlsx(clust8vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.8") 
+# write.xlsx(clust9vr, file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "C.9") 
+
+### GSE analysis ###
+gsevsrest0 = ggosummarybp(gene0symbol(clust0vr[abs(clust0vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest1 = ggosummarybp(gene0symbol(clust1vr[abs(clust1vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest2 = ggosummarybp(gene0symbol(clust2vr[abs(clust2vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest3 = ggosummarybp(gene0symbol(clust3vr[abs(clust3vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest4 = ggosummarybp(gene0symbol(clust4vr[abs(clust4vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest5 = ggosummarybp(gene0symbol(clust5vr[abs(clust5vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest6 = ggosummarybp(gene0symbol(clust6vr[abs(clust6vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest7 = ggosummarybp(gene0symbol(clust7vr[abs(clust7vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest8 = ggosummarybp(gene0symbol(clust8vr[abs(clust8vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+gsevsrest9 = ggosummarybp(gene0symbol(clust9vr[abs(clust9vr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+
+# write.xlsx(gsevsrest0$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.0") 
+# write.xlsx(gsevsrest1$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.1") 
+# write.xlsx(gsevsrest2$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.2") 
+# write.xlsx(gsevsrest3$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.3") 
+# write.xlsx(gsevsrest4$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.4") 
+# write.xlsx(gsevsrest5$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.5") 
+# write.xlsx(gsevsrest6$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.6") 
+# write.xlsx(gsevsrest7$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.7") 
+# write.xlsx(gsevsrest8$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.8") 
+# write.xlsx(gsevsrest9$gsego.bp,  file = paste0("csv/clusters_vs_rest.xlsx"), append = TRUE, sheetName= "gsea.9") 
+
+# custom checks
+# custom.gsea = function(data){
+#   test1 = data.frame(data)
+#   test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+#   test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+#   test1 = removecrap(test1)
+#   return(test1)
+# }
+# 
+# test.0 = custom.gsea(gsevsrest0$gsego.bp)
+# test.1 = custom.gsea(gsevsrest1$gsego.bp)
+# test.2 = custom.gsea(gsevsrest2$gsego.bp)
+# test.3 = custom.gsea(gsevsrest3$gsego.bp)
+# test.4 = custom.gsea(gsevsrest4$gsego.bp)
+# test.5 = custom.gsea(gsevsrest5$gsego.bp)
+# test.6 = custom.gsea(gsevsrest6$gsego.bp)
+# test.7 = custom.gsea(gsevsrest7$gsego.bp)
+# test.8 = custom.gsea(gsevsrest8$gsego.bp)
+# test.9 = custom.gsea(gsevsrest9$gsego.bp)
+# 
+# test.0$cluster = as.factor(0)
+# test.1$cluster = as.factor(1)
+# test.2$cluster = as.factor(2)
+# test.3$cluster = as.factor(3)
+# test.4$cluster = as.factor(4)
+# test.5$cluster = as.factor(5)
+# test.6$cluster = as.factor(6)
+# test.7$cluster = as.factor(7)
+# test.8$cluster = as.factor(8)
+# test.9$cluster = as.factor(9)
+# 
+# test.all = rbind(test.0, test.1, test.2, test.3,test.4, 
+#                  test.5, test.6, test.7, test.8, test.9)
+
+# saveRDS(test.all, "rds/gsea.cluster.vs.rest.rds")
+test.all = readRDS("rds/gsea.cluster.vs.rest.rds")
+
+test.0a = pickrelevant(test.all[test.all$cluster == 0,])
+test.1a = pickrelevant(test.all[test.all$cluster == 1,])
+test.2a = pickrelevant(test.all[test.all$cluster == 2,])
+test.3a = pickrelevant(test.all[test.all$cluster == 3,])
+test.4a = pickrelevant(test.all[test.all$cluster == 4,])
+test.5a = pickrelevant(test.all[test.all$cluster == 5,])
+test.6a = pickrelevant(test.all[test.all$cluster == 6,])
+test.7a = pickrelevant(test.all[test.all$cluster == 7,])
+test.8a = pickrelevant(test.all[test.all$cluster == 8,])
+test.9a = pickrelevant(test.all[test.all$cluster == 9,])
+
+gsea.combined.a = rbind(test.0a, test.1a, test.2a, test.3a, 
+                      test.4a, test.5a, test.6a, 
+                      test.7a, test.8a, test.9a)
+
+gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "viral entry into host cell"),]
+gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "neuroinflammatory response"),]
+gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "immune response"),]
+gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "immune system process"),]
+gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "enzyme linked receptor protein signaling pathway"),]
+gsea.combined.a = gsea.combined.a[!(gsea.combined.a$Description == "inflammatory response"),]
+
+plot.a = gsea.combined.a[gsea.combined.a$p.adjust<0.05,]
+plot.a$log.p.adj = ifelse(plot.a$Pathway.Direction == "Suppressed", 
+                           -1*plot.a$log.p.adj, plot.a$log.p.adj)
+
+```
+
+Edit cluster vs rest for publication
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = TRUE, eval = FALSE}
+
+plot.a = readRDS("rds/clust.vs.rest.gsea.trimming.rds")
+plot.b = trimmer(plot.a)
+
+###
+temp.innate  = plot.b[plot.b$group == "innate",]
+###
+temp  = plot.b[plot.b$group == "adaptive",]
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 0
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 1
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 3
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 4
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 5
+temp.adaptive = temp
+###
+
+temp  = plot.b[plot.b$group == "cell",]
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 3
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 5
+temp.cell = temp
+###
+
+temp.metab = plot.b[plot.b$group == "metab",]
+###
+
+temp  = plot.b[plot.b$group == "death",]
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 0
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = 1
+temp.death = temp
+###
+
+# plot.c = rbind(temp.innate, temp.adaptive,
+#                temp.metab, temp.cell, temp.death)
+# saveRDS(plot.c, "rds/cluster.vs.rest.trimmed.grouped.rds")
+
+g1 = ggplot(temp.innate,  
+       aes(y= Description, x = log.p.adj, fill = cluster))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+ xlim(-20,20)+
+  geom_vline(xintercept=0) + facet_grid(group~.)
+
+g2 = ggplot(temp.adaptive,  
+       aes(y= Description, x = log.p.adj, fill = cluster))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+xlim(-20,20)+
+  geom_vline(xintercept=0) + facet_grid(group~.)
+
+g3 = ggplot(temp.metab,  
+       aes(y= Description, x = log.p.adj, fill = cluster))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+xlim(-20,20)+
+  geom_vline(xintercept=0) + facet_grid(group~.)
+
+g4 = ggplot(temp.cell,  
+       aes(y= Description, x = log.p.adj, fill = cluster))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+xlim(-20,20)+
+  geom_vline(xintercept=0) + facet_grid(group~.)
+
+g5 = ggplot(temp.death,  
+       aes(y= Description, x = log.p.adj, fill = cluster))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+xlim(-20,20)+
+  geom_vline(xintercept=0) + facet_grid(group~.)
+
+
+tiff("figures/clust.vs.rest.trimmed5.tiff", res = 300, units = "cm", height = 55, width = 30)
+g1/g2/g3/g4/g5 + plot_layout(height = c(1,1,3.8,2.2,1))
+dev.off()
+
+tiff("figures/clust.vs.rest.trimmed5a.tiff", res = 300, units = "cm", height = 30, width = 30)
+g1/g2/g5
+dev.off()
+
+tiff("figures/clust.vs.rest.trimmed5b.tiff", res = 300, units = "cm", height = 40, width = 30)
+g3/g4 + plot_layout(height = c(3,1.8))
+dev.off()
+
+```
+
+Combine GSEA results for pairwise cluster comparisons - Cluster 6
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = TRUE, eval = FALSE}
+# 6 vs rest of tissues/clusters
+gc()
+cluster = c()
+cluster = 6
+
+clustvr = c()
+clustvr = clustall(se.markers.all.0, cluster)
+
+vrestbp = ggosummarybp(gene0symbol(clustvr[abs(clustvr$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+test1 = data.frame(vrestbp$gsego.bp)
+test1 = test1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1, NES)
+test1$Pathway.Direction = cut(-1*test1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+test1 = removecrap(test1)
+test1a = test1
+test1a = ifelse(test1a$Pathway.Direction=="Suppressed", -1*test1a$log.p.adj, test1a$log.p.adj)
+
+# 6 vs 3
+  se.3.6 = FindMarkers(se, ident.1 = 3, ident.2 = 6,
+                        min.pct = 0.5, logfc.threshold = 0, 
+                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+  cse.3.6 = clustpprocess(se.3.6)
+  v.3.6 = ggosummarybp(gene0symbol(cse.3.6[abs(cse.3.6$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+
+  test3.6 = data.frame(v.3.6$gsego.bp)
+  test3.6 = test3.6 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test3.6, NES)
+  test3.6$Pathway.Direction = cut(-1*test3.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test3.6 = removecrap(test3.6)
+  
+  test3.6r = test3.6
+  test3.6r$Pathway.Direction = cut(test3.6r$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test3.6r$log.p.adj = ifelse(test3.6r$Pathway.Direction=="Suppressed", -1*test3.6r$log.p.adj, test3.6r$log.p.adj)
+  
+# 6 vs 0
+  se.0.6 = FindMarkers(se, ident.1 = 0, ident.2 = 6,
+                        min.pct = 0.5, logfc.threshold = 0, 
+                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+  cse.0.6 = clustpprocess(se.0.6)
+  v.0.6 = ggosummarybp(gene0symbol(cse.0.6[abs(cse.0.6$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+
+  test0.6 = data.frame(v.0.6$gsego.bp)
+  test0.6 = test0.6 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test0.6, NES)
+  test0.6$Pathway.Direction = cut(-1*test0.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test0.6 = removecrap(test0.6)
+  
+  test0.6r = test0.6
+  test0.6r$Pathway.Direction = cut(test0.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test0.6r$log.p.adj = ifelse(test0.6r$Pathway.Direction=="Suppressed", -1*test0.6r$log.p.adj, test0.6r$log.p.adj)
+  
+# 6 vs 1
+  se.1.6 = FindMarkers(se, ident.1 = 1, ident.2 = 6,
+                        min.pct = 0.5, logfc.threshold = 0, 
+                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+  cse.1.6 = clustpprocess(se.1.6)
+  v.1.6 = ggosummarybp(gene0symbol(cse.1.6[abs(cse.1.6$avg_log2FC)>log2(1.1),]), 0.05, "BH", "all")
+
+  test1.6 = data.frame(v.1.6$gsego.bp)
+  test1.6 = test1.6 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(test1.6, NES)
+  test1.6$Pathway.Direction = cut(-1*test1.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1.6 = removecrap(test1.6)
+ 
+  test1.6r = test1.6
+  test1.6r$Pathway.Direction = cut(test1.6$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  test1.6r$log.p.adj = ifelse(test1.6r$Pathway.Direction=="Suppressed", -1*test1.6r$log.p.adj, test1.6r$log.p.adj)
+
+  # 6 vs neighbours
+  se.near = se
+  se.near = SetIdent(se.near, value = "seurat_clusters")
+  se.near = RegionNeighbours(se.near, id = "6", verbose = TRUE)
+
+  se.near = SetIdent(se.near, value = "nbs_6")
+  se.near.markers = FindMarkers(se.near, ident.1 = "6",  ident.2 = "nbs_6", logfc.threshold = log2(1.1))
+  se.near.markers$gene = rownames(se.near.markers)
+  se.near.subset = SubsetSTData(se.near, expression = nbs_6 %in% c("6", "nbs_6"))
+  sorted.marks = se.near.markers %>% top_n(n = 40, wt = abs(avg_log2FC))
+  sorted.marks = sorted.marks[order(sorted.marks$avg_log2FC, decreasing = T), ]
+
+  se.near.markers1 = se.near.markers[se.near.markers$p_val_adj < 0.05,]
+  se.near.markers1 = se.near.markers1[order(-se.near.markers1$avg_log2FC),]
+  se.near.markers2 = se.near.markers1$avg_log2FC
+  names(se.near.markers2) = se.near.markers1$gene
+
+  se.near.gsea = ggosummarybp(se.near.markers2, 0.05, "BH", "all")
+  se.near.gsea1 = data.frame(se.near.gsea$gsego.bp)
+  se.near.gsea1 = se.near.gsea1 %>% dplyr::mutate(log.p.adj = -log(p.adjust)) %>% arrange(se.near.gsea1, NES)
+  se.near.gsea1$Pathway.Direction = cut(-1*se.near.gsea1$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  se.near.gsea1 = removecrap(se.near.gsea1)
+  se.near.gsea1$log.p.adj = ifelse(se.near.gsea1$Pathway.Direction=="Suppressed", -1*se.near.gsea1$log.p.adj, se.near.gsea1$log.p.adj)
+  
+  # testc6 = list(test1, test3.6, test0.6, test1.6, se.near.gsea1)
+  # saveRDS(testc6, "rds/clust6vs.all.at3.0.rds")
+  # 
+  # testc6 = readRDS("rds/clust6vs.all.3.0.rds")
+  
+  # clean up
+  # test1 = testc6[[1]]
+  # test1$compare = as.factor("6 vs rest")
+  # 
+  # test3.6r = testc6[[2]]
+  # test3.6r$Pathway.Direction = cut(1*test3.6r$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  # test3.6r$compare = as.factor("6 vs 3")
+  # 
+  # test0.6r = testc6[[3]]
+  # test0.6r$Pathway.Direction = cut(1*test0.6r$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  # test0.6r$compare = as.factor("6 vs 0")
+  # 
+  # test1.6r$Pathway.Direction = cut(1*test1.6r$NES, c(-Inf,0,Inf), c("Upregulated", "Suppressed"))
+  # test1.6r$compare = as.factor("6 vs 1")
+  # 
+  # se.near.gsea1 = testc6[[4]]
+  # se.near.gsea1$compare = as.factor("6 vs neigbours")
+  
+  test1 = pickrelevant(test1)
+  test3.6r = pickrelevant(test3.6r)
+  test0.6r = pickrelevant(test0.6r)
+  test1.6r = pickrelevant(test1.6r)
+  se.near.gsea1 = pickrelevant(se.near.gsea1)
+  test1$compare = as.factor("6 vs rest")
+  test3.6r$compare = as.factor("6 vs 3")
+  test0.6r$compare = as.factor("6 vs 0")
+  test1.6r$compare = as.factor("6 vs 1")
+  se.near.gsea1$compare = as.factor("6 vs neigbours")
+  
+  test.combined = rbind(test1, test0.6r, test1.6r, test3.6r,se.near.gsea1)
+  
+
+plot.a = test.combined[test.combined$p.adjust<0.05,]
+plot.a = trimmer(plot.a)
+
+# non in innate group
+ggplot(temp.adaptive,  aes(y= Description, x = log.p.adj, fill = compare))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2)+
+  theme(axis.text.y = element_text(size = 12))+
+  geom_vline(xintercept=0) + facet_grid(group~.)
+
+temp = plot.a[plot.a$group == "adaptive", ]
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = "6 vs 1"
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = "6 vs 3"
+
+temp = rbind(temp, temp[1,])
+temp[nrow(temp), c(4:14)] = 0
+temp[nrow(temp), 15] = "6 vs neigbours"
+
+temp.adaptive = temp
+temp.adaptive = temp.adaptive[!(temp.adaptive$Description %in% remove),]
+
+temp = plot.a[plot.a$group == "metab", ]
+temp.metab = temp
+temp.metab = temp.metab[!(temp.metab$Description %in% remove),]
+
+temp = plot.a[plot.a$group == "cell", ]
+temp.cell = temp
+temp.cell = temp.cell[!(temp.cell$Description == "sprouting angiogenesis"),]
+temp.cell = temp.cell[!(temp.cell$Description %in% remove),]
+
+temp = plot.a[plot.a$group == "death", ]
+temp.death = temp
+temp.death = temp.death[!(temp.death$Description %in% remove),]
+
+temp.death = rbind(temp.death, temp.adaptive)
+###
+
+# plot.c = rbind(temp.innate, temp.adaptive,
+#                temp.metab, temp.cell, temp.death)
+# saveRDS(plot.c, "rds/cluster.vs.rest.trimmed.grouped.rds")
+
+# g1 = ggplot(temp.adaptive,  
+#        aes(y= Description, x = log.p.adj, fill = compare))+
+#   geom_bar(stat = "identity", colour = "black", size = 0.2) +
+#   theme(axis.text.y = element_text(size = 12))+ xlim(-20,20)+
+#   geom_vline(xintercept=0) + facet_grid(group~.)
+
+plot.death = temp.death[!(temp.death$compare == "6 vs rest"),]
+plot.death = plot.death[!(plot.death$Description == "leukocyte activation"),]
+
+
+g2 = ggplot(plot.death,  
+       aes(y= Description, x = log.p.adj, fill = compare))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+ xlim(-20,20)+
+  geom_vline(xintercept=0) 
+
+g3 = ggplot(temp.metab[!(temp.metab$compare == "6 vs rest"),],  
+       aes(y= Description, x = log.p.adj, fill = compare))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+ xlim(-20,20)+
+  geom_vline(xintercept=0)
+
+g4 = ggplot(temp.cell[!(temp.cell$compare == "6 vs rest"),],  
+       aes(y= Description, x = log.p.adj, fill = compare))+
+  geom_bar(stat = "identity", colour = "black", size = 0.2) +
+  theme(axis.text.y = element_text(size = 12))+ xlim(-20,20)+
+  geom_vline(xintercept=0)
+
+tiff("figures/clust.6.trimmed.tiff", res = 300, units = "cm", height = 35, width = 25)
+g2/g3/g4 + plot_layout(height = c(1,7,1))
+dev.off()
+
+
+```
+
+Giotto section
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = TRUE, eval = FALSE}
+# # Prev run already
+# knitr::opts_chunk$set(echo = FALSE, cache = FALSE)
+# source("setup/giotto.setup.R")
+
+kidney.visium.a = readRDS("~/Documents/Project data - R files/SpatialT/giotto/rds/kidney.a1.rds")
+kidney.visium.b = readRDS("~/Documents/Project data - R files/SpatialT/giotto/rds/kidney.b1.rds")
+kidney.visium.c = readRDS("~/Documents/Project data - R files/SpatialT/giotto/rds/kidney.c1.rds")
+kidney.visium.d = readRDS("~/Documents/Project data - R files/SpatialT/giotto/rds/kidney.d1.rds")
+kidney.visium.e = readRDS("~/Documents/Project data - R files/SpatialT/giotto/rds/kidney.e1.rds")
+kidney.visium.f = readRDS("~/Documents/Project data - R files/SpatialT/giotto/rds/kidney.f1.rds")
+
+goi = c('Havcr1', 'Lcn2', 'Krt20', 'Cryab', 'Cfh')
+# goi = c('Ccl2', 'Ido2', 'Il6', 'Il1b')
+
+ka = spatGenePlot(kidney.visium.a, expression_values = 'scaled',
+                  genes = goi, point_size = 2, cow_n_col = 5, gradient_limits = c(-3,3))
+kb = spatGenePlot(kidney.visium.b, expression_values = 'scaled',
+                  genes = goi, point_size = 2, cow_n_col = 5, gradient_limits = c(-3,3))
+kc = spatGenePlot(kidney.visium.c, expression_values = 'scaled',
+                  genes = goi, point_size = 2, cow_n_col = 5, gradient_limits = c(-3,3))
+kd = spatGenePlot(kidney.visium.d, expression_values = 'scaled',
+                  genes = goi, point_size = 2, cow_n_col = 5, gradient_limits = c(-3,3))
+ke = spatGenePlot(kidney.visium.e, expression_values = 'scaled',
+                  genes = goi, point_size = 2, cow_n_col = 5, gradient_limits =c(-3,3))
+kf = spatGenePlot(kidney.visium.f, expression_values = 'scaled',
+                  genes = goi, point_size = 2, cow_n_col = 5, gradient_limits = c(-3,3))
+
+tiff("giotto/figure/trial.2.tiff", res = 300, units = "cm", height = 30, width = 40)
+ggarrange(kc, kd, kb, ka, ke, kf, nrow = 6, 
+          common.legend = TRUE, legend = "right")
+dev.off()
+
+
+# PAGE
+jasn.markers = read.xlsx("~/Documents/Project data - R files/SpatialT/giotto/jasn.markers.xlsx", sheetIndex = 1)
+Tol.DC.markers = readRDS("~/Documents/Project data - R files/SpatialT/rds/signature.toldc.rds")
+Tol.DC.markers = Tol.DC.markers[,2]
+
+podocyte = jasn.markers[,1]
+podocyte = podocyte[!is.na(podocyte)]
+podocyte = podocyte[!(podocyte %in% Tol.DC.markers)]
+
+CNT = jasn.markers[,2]
+CNT = CNT[!is.na(CNT)]
+CNT = CNT[!(CNT %in% Tol.DC.markers)]
+
+TALs = jasn.markers[,3]
+TALs = TALs[!is.na(TALs)]
+TALs = TALs[!(TALs %in% Tol.DC.markers)]
+
+PT1 = jasn.markers[,4]
+PT1 = PT1[!is.na(PT1)]
+PT1 = PT1[!(PT1 %in% Tol.DC.markers)]
+
+PT2 = jasn.markers[,5]
+PT2 = PT2[!is.na(PT2)]
+PT2 = PT2[!(PT2 %in% Tol.DC.markers)]
+
+TL = jasn.markers[,6]
+TL = TL[!is.na(TL)]
+TL = TL[!(TL %in% Tol.DC.markers)]
+
+PT3 = jasn.markers[,7]
+PT3 = PT3[!is.na(PT3)]
+PT3 = PT3[!(PT3 %in% Tol.DC.markers)]
+
+InjPT = jasn.markers[,8]
+InjPT = InjPT[!is.na(InjPT)]
+InjPT = InjPT[!(InjPT %in% Tol.DC.markers)]
+
+sig.matrix1 = makeSignMatrixPAGE(
+  sign_names = c('toldc', 'podocyte', 'CNT', 'TALs', 
+                 'PT1', 'PT2', 'TL', 'PT3', 'InjPT'),
+  sign_list = list(Tol.DC.markers, podocyte, CNT, TALs,
+                   PT1, PT2, TL, PT3, InjPT))
+
+sig.matrix2 =  makeSignMatrixPAGE(
+  sign_names = c('podocyte', 'CNT', 'TALs', 
+                 'PT1.2', 'TL', 'PT3', 'InjPT'),
+  sign_list = list(podocyte, CNT, TALs,
+                   c(PT1,PT2), TL, PT3, InjPT))
+
+sig.matrix.test =  makeSignMatrixPAGE(
+  sign_names = c('podocyte', 'CNT', 'TALs', 
+                 'PT1.2', 'TL', 'PT3'),
+  sign_list = list(podocyte, CNT, TALs,
+                   c(PT1,PT2), TL, PT3))
+
+sig.matrix = sig.matrix2
+
+kidney.visium.a.page = kidney.visium.a
+kidney.visium.a.page = runPAGEEnrich(gobject =kidney.visium.a.page,
+                                     sign_matrix = sig.matrix)
+# plotMetaDataCellsHeatmap(gobject = kidney.visium.a.page,
+#                          metadata_cols = 'leiden_clus',
+#                          value_cols = colnames(sig.matrix),
+#                          spat_enr_names = 'PAGE',
+#                          x_text_size = 8, 
+#                          y_text_size = 8)
+
+kidney.visium.b.page = kidney.visium.b
+kidney.visium.b.page = runPAGEEnrich(gobject = kidney.visium.b.page,
+                                     sign_matrix = sig.matrix)
+# plotMetaDataCellsHeatmap(gobject = kidney.visium.b.page,
+#                          metadata_cols = 'leiden_clus',
+#                          value_cols = colnames(sig.matrix),
+#                          spat_enr_names = 'PAGE',
+#                          x_text_size = 8, 
+#                          y_text_size = 8)
+
+kidney.visium.c.page = kidney.visium.c
+kidney.visium.c.page = runPAGEEnrich(gobject = kidney.visium.c.page,
+                                     sign_matrix = sig.matrix)
+# plotMetaDataCellsHeatmap(gobject = kidney.visium.c.page,
+#                          metadata_cols = 'leiden_clus',
+#                          value_cols = colnames(sig.matrix),
+#                          spat_enr_names = 'PAGE',
+#                          x_text_size = 8, 
+#                          y_text_size = 8)
+
+kidney.visium.d.page = kidney.visium.d
+kidney.visium.d.page = runPAGEEnrich(gobject = kidney.visium.d.page,
+                                     sign_matrix = sig.matrix)
+# plotMetaDataCellsHeatmap(gobject = kidney.visium.d.page,
+#                          metadata_cols = 'leiden_clus',
+#                          value_cols = colnames(sig.matrix),
+#                          spat_enr_names = 'PAGE',
+#                          x_text_size = 8, 
+#                          y_text_size = 8)
+
+kidney.visium.e.page = kidney.visium.e
+kidney.visium.e.page = runPAGEEnrich(gobject = kidney.visium.e.page,
+                                     sign_matrix = sig.matrix)
+# plotMetaDataCellsHeatmap(gobject = kidney.visium.e.page,
+#                          metadata_cols = 'leiden_clus',
+#                          value_cols = colnames(sig.matrix),
+#                          spat_enr_names = 'PAGE',
+#                          x_text_size = 8, 
+#                          y_text_size = 8)
+
+kidney.visium.f.page = kidney.visium.f
+kidney.visium.f.page = runPAGEEnrich(gobject = kidney.visium.f.page,
+                                     sign_matrix = sig.matrix)
+# plotMetaDataCellsHeatmap(gobject = kidney.visium.f.page,
+#                          metadata_cols = 'leiden_clus',
+#                          value_cols = colnames(sig.matrix),
+#                          spat_enr_names = 'PAGE',
+#                          x_text_size = 8, 
+#                          y_text_size = 8)
+
+inj.a = spatCellPlot(gobject = kidney.visium.a.page, 
+                     spat_enr_names = 'PAGE',
+                     cell_annotation_values = c("PT1.2","PT3"),
+                     cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+inj.b = spatCellPlot(gobject = kidney.visium.b.page, 
+                     spat_enr_names = 'PAGE',gradient_limits =c(-10,10),
+                     cell_annotation_values = c("PT1.2","PT3"),
+                     cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+inj.b1 = spatCellPlot(gobject = kidney.visium.b.page1, 
+                      spat_enr_names = 'PAGE',gradient_limits =c(-10,10),
+                      cell_annotation_values = c("PT1.2","PT3"),
+                      cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+inj.c = spatCellPlot(gobject = kidney.visium.c.page, 
+                     spat_enr_names = 'PAGE',gradient_limits =c(-10,10),
+                     cell_annotation_values = c("PT1.2","PT3"),
+                     cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+inj.d = spatCellPlot(gobject = kidney.visium.d.page, 
+                     spat_enr_names = 'PAGE',gradient_limits =c(-10,10),  
+                     cell_annotation_values = c("PT1.2","PT3"),
+                     cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+inj.e = spatCellPlot(gobject = kidney.visium.e.page, 
+                     spat_enr_names = 'PAGE',gradient_limits =c(-10,10),  
+                     cell_annotation_values = c("PT1.2","PT3"),
+                     cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+inj.f = spatCellPlot(gobject = kidney.visium.f.page, 
+                     spat_enr_names = 'PAGE',gradient_limits =c(-10,10),   
+                     cell_annotation_values = c("PT1.2","PT3"),
+                     cow_n_col = 2,coord_fix_ratio = NULL, point_size = 1)
+
+ggarrange(inj.c, inj.d, inj.b, inj.a, inj.e, inj.f, nrow = 6, 
+          common.legend = TRUE, legend = "right")
+
+ggarrange(inj.b, inj.b1, nrow = 2, 
+          common.legend = TRUE, legend = "right")
+
+tiff("~/Documents/Project data - R files/SpatialT/giotto/figure/trial.page.2.tiff", 
+     res = 300, units = "cm", height = 30, width = 18)
+ggarrange(inj.c, inj.d, inj.b, inj.a, inj.e, inj.f, nrow = 6, 
+          common.legend = TRUE, legend = "right")
+dev.off()
+
+
+testa = data.frame(kidney.visium.a.page@spatial_enrichment$PAGE)
+testb = data.frame(kidney.visium.b.page@spatial_enrichment$PAGE)
+testc = data.frame(kidney.visium.c.page@spatial_enrichment$PAGE)
+testd = data.frame(kidney.visium.d.page@spatial_enrichment$PAGE)
+teste = data.frame(kidney.visium.e.page@spatial_enrichment$PAGE)
+testf = data.frame(kidney.visium.f.page@spatial_enrichment$PAGE)
+
+basic.stats = data.frame(A = c(sum(testa$PT1.2>0), sum(testa$PT3>0),sum(testa$InjPT>0)))
+rownames(basic.stats) = c("PT1.2", "PT3", "InjPT")
+basic.stats$B = c(sum(testb$PT1.2>0), sum(testb$PT3>0),sum(testb$InjPT>0))
+basic.stats$C = c(sum(testc$PT1.2>0), sum(testc$PT3>0),sum(testc$InjPT>0))
+basic.stats$D = c(sum(testd$PT1.2>0), sum(testd$PT3>0),sum(testd$InjPT>0))
+basic.stats$E = c(sum(teste$PT1.2>0), sum(teste$PT3>0),sum(teste$InjPT>0))
+basic.stats$'F' = c(sum(testf$PT1.2>0), sum(testf$PT3>0),sum(testf$InjPT>0))
+basic.stats = data.frame(t(basic.stats))
+basic.stats$pc.PT3 =  basic.stats$InjPT*100/(basic.stats$InjPT+basic.stats$PT3)
+basic.stats$pc.PT = basic.stats$InjPT*100/(basic.stats$InjPT+basic.stats$PT3+basic.stats$PT1.2)
+
+basic.stats1 = data.frame(A = c(sum(testa[testa$PT1.2>0,]$PT1.2),
+                                sum(testa[testa$PT3>0,]$PT3),
+                                sum(testa[testa$InjPT>0,]$InjPT)))
+rownames(basic.stats1) = c("PT1.2", "PT3", "InjPT")
+basic.stats1$B =  c(sum(testb[testb$PT1.2>0,]$PT1.2),
+                    sum(testb[testb$PT3>0,]$PT3),
+                    sum(testb[testb$InjPT>0,]$InjPT))
+basic.stats1$C =  c(sum(testc[testc$PT1.2>0,]$PT1.2),
+                    sum(testc[testc$PT3>0,]$PT3),
+                    sum(testc[testc$InjPT>0,]$InjPT))
+basic.stats1$D =  c(sum(testd[testd$PT1.2>0,]$PT1.2),
+                    sum(testd[testd$PT3>0,]$PT3),
+                    sum(testd[testd$InjPT>0,]$InjPT))
+basic.stats1$E =  c(sum(teste[teste$PT1.2>0,]$PT1.2),
+                    sum(teste[teste$PT3>0,]$PT3),
+                    sum(teste[teste$InjPT>0,]$InjPT))
+basic.stats1$'F' =  c(sum(testf[testf$PT1.2>0,]$PT1.2),
+                      sum(testf[testf$PT3>0,]$PT3),
+                      sum(testf[testf$InjPT>0,]$InjPT))
+basic.stats1 = data.frame(t(basic.stats1))
+basic.stats1$pc.PT3 = basic.stats1$InjPT*100/(basic.stats1$InjPT+basic.stats1$PT3)
+basic.stats1$pc.PT = basic.stats1$InjPT*100/(basic.stats1$InjPT+basic.stats1$PT3+basic.stats1$PT1.2)
+
+rownames(basic.stats) = c("PBS", "LPSTol", "PBS.", "Tol", "Tol.", "LPSTol.")
+rownames(basic.stats1) = c("PBS", "LPSTol", "PBS.", "Tol", "Tol.", "LPSTol.")
+basic.stats
+basic.stats1
+
+basic.stats = data.frame(t(basic.stats))
+basic.stats$totalPBS = basic.stats$PBS + basic.stats$PBS.
+basic.stats$totalTol = basic.stats$Tol + basic.stats$Tol.
+basic.stats$totalLPSTol = basic.stats$LPSTol + basic.stats$LPSTol.
+basic.stats = data.frame(t(basic.stats))
+basic.stats$pc.PT3 =  basic.stats$InjPT*100/(basic.stats$InjPT+basic.stats$PT3)
+basic.stats$pc.PT = basic.stats$InjPT*100/(basic.stats$InjPT+basic.stats$PT3+basic.stats$PT1.2)
+basic.stats = data.frame(t(basic.stats))
+
+basic.stats1 = data.frame(t(basic.stats1))
+basic.stats1$totalPBS = basic.stats1$PBS + basic.stats1$PBS.
+basic.stats1$totalTol = basic.stats1$Tol + basic.stats1$Tol.
+basic.stats1$totalLPSTol = basic.stats1$LPSTol + basic.stats1$LPSTol.
+basic.stats1 = data.frame(t(basic.stats1))
+basic.stats1$pc.PT3 =  basic.stats1$InjPT*100/(basic.stats1$InjPT+basic.stats1$PT3)
+basic.stats1$pc.PT = basic.stats1$InjPT*100/(basic.stats1$InjPT+basic.stats1$PT3+basic.stats1$PT1.2)
+
+```

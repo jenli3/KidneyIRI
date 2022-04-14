@@ -1,0 +1,806 @@
+---
+title: "Spatial mKid - Data processing"
+author: "Jen Li"
+output: html_document
+---
+
+# Set up 
+
+Setup scripts for packages and custom functions
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# set working directory
+  setwd("~/Documents/Project data - R files/SpatialT/")
+  knitr::opts_chunk$set(echo = FALSE, cache = FALSE, message = FALSE, warning = FALSE)
+  
+# load pkgs, pkg.versions & custom functions
+  source("setup/setup.spatial.R")
+
+# record of pkgs
+  writeLines(capture.output(sessionInfo()), "setup/current.packages.txt")
+  write.table(pkg.versions, "setup/package.versions.txt", append = FALSE, 
+            sep = " ", dec = ".", row.names = TRUE, col.names = TRUE)
+
+set.seed(42)
+gc()
+```
+
+### Load data using STUtility
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# Set up info table for Seurat and STUtility
+infoTable=data.frame(matrix(ncol=4, nrow=6))
+colnames(infoTable) = c("samples", "spotfiles", "imgs", "json")
+rownames(infoTable) = c("D17", "D19", "D54","D12", "D20", "D53")
+infoTable$samples = c("C/filtered_feature_bc_matrix.h5", "D/filtered_feature_bc_matrix.h5",
+                      "B/filtered_feature_bc_matrix.h5","E/filtered_feature_bc_matrix.h5",
+                      "F/filtered_feature_bc_matrix.h5", "A/filtered_feature_bc_matrix.h5")
+infoTable$spotfiles = c("C/spatial/tissue_positions_list.csv","D/spatial/tissue_positions_list.csv",
+                        "B/spatial/tissue_positions_list.csv","E/spatial/tissue_positions_list.csv",
+                        "F/spatial/tissue_positions_list.csv","A/spatial/tissue_positions_list.csv")
+infoTable$imgs = c("C/spatial/tissue_hires_image.png", "D/spatial/tissue_hires_image.png", 
+                    "B/spatial/tissue_hires_image.png","E/spatial/tissue_hires_image.png", 
+                    "F/spatial/tissue_hires_image.png", "A/spatial/tissue_hires_image.png")
+infoTable$json = c("C/spatial/scalefactors_json.json","D/spatial/scalefactors_json.json",
+                    "B/spatial/scalefactors_json.json",  "E/spatial/scalefactors_json.json",
+                    "F/spatial/scalefactors_json.json", "A/spatial/scalefactors_json.json")
+infoTable$treatment = c("PBS",  "TolDC", "LPSTol", "PBS",  "TolDC",  "LPSTol")
+infoTable$slide = c("D17", "D19", "D54","D12", "D20", "D53")
+se = InputFromTable(infotable = infoTable,
+                     min.gene.spots = 5,  min.spot.count = 50, 
+                     platform = "Visium")
+st.object  =  GetStaffli(se)
+se$sample_id  =  paste0("section_", GetStaffli(se)@meta.data$sample)
+# saveRDS(se.raw, "rds/seraw.rds")
+gc()
+```
+
+Calculate QC attributes pre-filtering
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+gene_attr.raw = data.frame(nUMI = Matrix::rowSums(se@assays$RNA@counts), 
+                        nSpots = Matrix::rowSums(se@assays$RNA@counts > 0))
+
+mt.genes.raw = grep(pattern = "^mt-", x = rownames(se), value = TRUE) # mitochondrial
+se$percent.mito.raw = (Matrix::colSums(se@assays$RNA@counts[mt.genes.raw, ])/
+                      Matrix::colSums(se@assays$RNA@counts))*100
+
+rp.genes.raw = grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE) # ribosomal
+se$percent.ribo.raw = (Matrix::colSums(se@assays$RNA@counts[rp.genes.raw, ])/
+                      Matrix::colSums(se@assays$RNA@counts))*100
+
+umi_data.raw = GetAssayData(object = se, slot = "counts", assay = "RNA") # Count
+
+gene_attr.raw = data.frame(mean = rowMeans(umi_data.raw),
+                        detection_rate = rowMeans(umi_data.raw > 0),
+                        var = apply(umi_data.raw, 1, var), 
+                        row.names = rownames(umi_data.raw)) %>%
+  mutate(log_mean = log10(mean), log_var = log10(var))
+
+spot_attr.raw = se[[c("nFeature_RNA", "nCount_RNA")]]
+gc()
+```
+
+Pre filter/normalisation QC plots
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+p1 = ggplot() +  geom_boxplot(data = se[[]], 
+                              aes(y = fct_rev(factor(treatment)), nFeature_RNA, 
+                                  colour = factor(treatment)), 
+                              alpha = 0.1, bins = 50) +
+  ggtitle("Unique genes per spot") + theme_pubr(legend = "right") + 
+  geom_vline (xintercept = 200, linetype = "dotdash")+ ylab("")
+
+p2 = ggplot() +geom_boxplot(data = se[[]], 
+                            aes(y = fct_rev(factor(treatment)), 
+                                nCount_RNA, colour = factor(treatment)),
+                            fill = "red",alpha = 0.1,bins = 50) +
+  ggtitle("Total counts per spots") + theme_pubr(legend = "right") + 
+  geom_vline (xintercept = 100, linetype = "dotdash")+ ylab("")
+
+p3 = ggplot() + geom_boxplot(data = se[[]], 
+                             aes(y = fct_rev(factor(treatment)),
+                                 percent.mito.raw, colour = factor(treatment)), 
+                             alpha = 0.1, bins = 50) +
+  ggtitle("Mitochondrial genes" ) + theme_pubr(legend = "right") +
+  geom_vline (xintercept = 30, linetype = "dotdash")+ ylab("")
+
+p4 = ggplot() + geom_boxplot(data = se[[]], 
+                             aes(y = fct_rev(factor(treatment)),
+                                 percent.ribo.raw, colour = factor(treatment)), 
+                             alpha = 0.1, bins = 50) +  
+  ggtitle("Ribosomal geness") + theme_pubr(legend = "right")+ ylab("")
+
+p5 = ggplot() + geom_histogram(data = se[[]], 
+                               aes(nFeature_RNA.raw, colour = factor(slide)), 
+                               alpha = 0.1, bins = 50) + ggtitle("Unique genes per spot") + 
+  theme_pubr(legend = "right") + geom_vline (xintercept = 200, linetype = "dotdash")
+
+p6 = ggplot() +geom_histogram(data = se[[]], 
+                              aes(nCount_RNA.raw, colour = factor(slide)),  
+                              fill = "red", alpha = 0.1,  bins = 50) + 
+  ggtitle("Total counts per spots") + theme_pubr(legend = "right") + 
+  geom_vline (xintercept = 100, linetype = "dotdash")
+
+p7 = ggplot() + geom_histogram(data = se[[]], 
+                               aes(percent.mito.raw, colour = factor(slide)), 
+                               alpha = 0.1, bins = 50) + ggtitle("Mitochondrial genes" ) + 
+  theme_pubr(legend = "right") + geom_vline (xintercept = 30, linetype = "dotdash")
+
+p8 = ggplot() + geom_histogram(data = se[[]], 
+                               aes(percent.ribo.raw, colour = factor(slide)), 
+                               alpha = 0.1,  bins = 50) +  
+  ggtitle("Ribosomal geness") + theme_pubr(legend = "right")
+
+p9 = ST.FeaturePlot(se, features = "nFeature_RNA", 
+                    cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+                    pt.size = 1.3, ncol = 6) + theme_cleantable()
+p10 = ST.FeaturePlot(se, features = "percent.mito", 
+                     cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+                     pt.size = 1.3, ncol = 6) + theme_cleantable()
+# combine plots - save before next
+(p6+p2+p5+p1)/(p7+p3+p8+p4)
+p9+p10
+gc()
+```
+
+Filter, normalize and re-calculate QC attributes
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+se = SubsetSTData(se,expression = nFeature_RNA > 200
+                  & nCount_RNA > 100 & percent.mito < 30)
+
+mt.genes = grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+se$percent.mito = (Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/
+                      Matrix::colSums(se@assays$RNA@counts))*100
+
+rp.genes = grep(pattern = "^Rpl|^Rps", x = rownames(se), value = TRUE)
+se$percent.ribo = (Matrix::colSums(se@assays$RNA@counts[rp.genes, ])/
+                      Matrix::colSums(se@assays$RNA@counts))*100
+
+se = SCTransform(se,  vars.to.regress = c("slide", "percent.mito"))
+
+umi_data = GetAssayData(object = se, slot = "counts", assay = "RNA")
+
+gene_attr = data.frame(mean = rowMeans(umi_data),
+                        detection_rate = rowMeans(umi_data > 0),
+                        var = apply(umi_data, 1, var), 
+                        row.names = rownames(umi_data)) %>%
+  mutate(log_mean = log10(mean), log_var = log10(var))
+
+spot_attr = se[[c("nFeature_RNA", "nCount_RNA")]]
+
+# Loading images for STUtility
+se = LoadImages(se, time.resolve = FALSE, verbose = TRUE)
+se = MaskImages(object = se)
+ImagePlot(se, method = "raster", type = "masked", ncol = 1)
+gc()
+```
+
+Post filter/normalisation QC plots
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+p1 = ggplot() +  geom_boxplot(data = se[[]], 
+                              aes(y = fct_rev(factor(treatment)), nFeature_RNA, 
+                                  colour = factor(treatment)), 
+                              alpha = 0.1, bins = 50) +
+  ggtitle("Unique genes per spot") + theme_pubr(legend = "right") + 
+  geom_vline (xintercept = 200, linetype = "dotdash")+ ylab("")
+
+p2 = ggplot() +geom_boxplot(data = se[[]], 
+                            aes(y = fct_rev(factor(treatment)), 
+                                nCount_RNA, colour = factor(treatment)),
+                            fill = "red",alpha = 0.1,bins = 50) +
+  ggtitle("Total counts per spots") + theme_pubr(legend = "right") + 
+  geom_vline (xintercept = 100, linetype = "dotdash")+ ylab("")
+
+p3 = ggplot() + geom_boxplot(data = se[[]], 
+                             aes(y = fct_rev(factor(treatment)),
+                                 percent.mito, colour = factor(treatment)), 
+                             alpha = 0.1, bins = 50) +
+  ggtitle("Mitochondrial genes" ) + theme_pubr(legend = "right") +
+  geom_vline (xintercept = 30, linetype = "dotdash")+ ylab("")
+
+p4 = ggplot() + geom_boxplot(data = se[[]], 
+                             aes(y = fct_rev(factor(treatment)),
+                                 percent.ribo, colour = factor(treatment)), 
+                             alpha = 0.1, bins = 50) +  
+  ggtitle("Ribosomal geness") + theme_pubr(legend = "right")+ ylab("")
+
+p5 = ggplot() + geom_histogram(data = se[[]], 
+                               aes(nFeature_RNA, colour = factor(slide)), 
+                               alpha = 0.1, bins = 50) + ggtitle("Unique genes per spot") + 
+  theme_pubr(legend = "right") + geom_vline (xintercept = 200, linetype = "dotdash")
+
+p6 = ggplot() +geom_histogram(data = se[[]], 
+                              aes(nCount_RNA, colour = factor(slide)),  
+                              fill = "red", alpha = 0.1,  bins = 50) + 
+  ggtitle("Total counts per spots") + theme_pubr(legend = "right") + 
+  geom_vline (xintercept = 100, linetype = "dotdash")
+
+p7 = ggplot() + geom_histogram(data = se[[]], 
+                               aes(percent.mito, colour = factor(slide)), 
+                               alpha = 0.1, bins = 50) + ggtitle("Mitochondrial genes" ) + 
+  theme_pubr(legend = "right") + geom_vline (xintercept = 30, linetype = "dotdash")
+
+p8 = ggplot() + geom_histogram(data = se[[]], 
+                               aes(percent.ribo, colour = factor(slide)), 
+                               alpha = 0.1,  bins = 50) +  
+  ggtitle("Ribosomal geness") + theme_pubr(legend = "right")
+
+p9 = ST.FeaturePlot(se, features = "nFeature_RNA", 
+                    cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+                    pt.size = 1.3, ncol = 6) + theme_cleantable()
+p10 = ST.FeaturePlot(se, features = "percent.mito", 
+                     cols = c("lightgray", "mistyrose", "red", "dark red", "black"), 
+                     pt.size = 1.3, ncol = 6) + theme_cleantable()
+
+# combine plots
+(p6+p2+p5+p1)/(p7+p3+p8+p4)
+p9+p10
+gc()
+```
+
+Descriptive stats for paper re: coverage and QC after above filtering etc
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+se_descrip.1 = SubsetSTData(se, expression = sample_id %in% "section_1")
+se_descrip.2 = SubsetSTData(se, expression = sample_id %in% "section_2")
+se_descrip.3 = SubsetSTData(se, expression = sample_id %in% "section_3")
+se_descrip.4 = SubsetSTData(se, expression = sample_id %in% "section_4")
+se_descrip.5 = SubsetSTData(se, expression = sample_id %in% "section_5")
+se_descrip.6 = SubsetSTData(se, expression = sample_id %in% "section_6")
+
+se_feat = se_features(se)
+se_feat
+gc()
+```
+
+### Spatial correlation, clustering and dimensionality reduction
+Spatial correlation and clustering optimisation
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+spatgenes = CorSpatialGenes(se)
+se = clustpack(se) # c(0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1, 1.2)
+se.resolving = clustresolve(se)
+se.resolving[[5]] # review table print out and tree to decide optimal resolution
+gc()
+```
+
+Clustering at optimal resolution
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+se = clustpackres(se, 0.3)
+
+n = 20
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+saveRDS(se, "rds/seallclust.rds")
+gc()
+```
+
+Visualize clustering and dimension reduction
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+plotpca = DimPlot(se, reduction = "pca" , split.by = "slide", ncol = 3, 
+                   shuffle=TRUE) +theme_pubr(legend = "right")
+plotumap = DimPlot(se, reduction = "umap", ncol = 3, 
+                    label = TRUE) +theme_pubr(legend = "right")
+plottsne = DimPlot(se, reduction = "tsne",ncol = 3, 
+                    label = TRUE) +theme_pubr(legend = "right")
+plotslideseurat = ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1, 
+                                  ncol = 2, legend.align = "bottom", value.scale = "all",
+                                  dark.theme = F, label=TRUE, cols = col_vector) + theme_pubr(legend = "right")
+plotslideumap2 = ST.DimPlot(object = se, dims = 1:3, label = TRUE,reduction = "umap.3d", 
+                             blend = T, pt.size = 1.8)
+plotftx = VlnPlot(se,features=c("Irf8", "Havcr1"), group.by = "treatment")
+
+DimPlot(se, reduction = "tsne", split.by = "slide", 
+        ncol = 3, label = TRUE) +theme_pubr(legend = "bottom")
+DimPlot(se, reduction = "umap", split.by = "slide", 
+        ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+DimPlot(se, reduction = "tsne", split.by = "treatment",
+        ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+DimPlot(se, reduction = "umap", split.by = "treatment",
+        ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+
+plotumap + plottsne
+
+ST.FeaturePlot(object = se, features = "seurat_clusters", 
+               pt.size = 1, ncol = 3, value.scale = "all",
+               dark.theme = F, cols = col_vector) + theme_pubr()
+
+```
+
+QC plots after clustering
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+p11 = ggplot() + geom_boxplot(data = se[[]], aes(y = fct_rev(factor(seurat_clusters)),nFeature_RNA, colour = factor(seurat_clusters)), alpha = 0.1, 
+                                   bins = 50) + ggtitle("Unique genes per spot") + theme_pubr(legend = "right") + geom_vline (xintercept = 200, linetype = "dotdash")+ ylab("")
+
+p12 = ggplot() +geom_boxplot(data = se[[]], aes(y = fct_rev(factor(seurat_clusters)),nCount_RNA, colour = factor(seurat_clusters)),  fill = "red", alpha = 0.1, 
+                                   bins = 50) + ggtitle("Total counts per spots") + theme_pubr(legend = "right") + geom_vline (xintercept = 100, linetype = "dotdash")+ ylab("")
+
+p13 = ggplot() + geom_boxplot(data = se[[]], aes(y = fct_rev(factor(seurat_clusters)),percent.mito, colour = factor(seurat_clusters)), alpha = 0.1, 
+                                    bins = 50) + ggtitle("Mitochondrial genes" ) + theme_pubr(legend = "right") + geom_vline (xintercept = 30, linetype = "dotdash")+ ylab("")
+
+p14 = ggplot() + geom_boxplot(data = se[[]], aes(y = fct_rev(factor(seurat_clusters)),percent.ribo, colour = factor(seurat_clusters)), alpha = 0.1, 
+                                    bins = 50) +  ggtitle("Ribosomal geness") + theme_pubr(legend = "right")+ ylab("")
+
+p15 = ggplot() + geom_boxplot(data = se[[]], aes(y = fct_rev(factor(slide1)),nFeature_RNA, colour = factor(slide1)), alpha = 0.1, 
+                                   bins = 50) + ggtitle("Unique genes per spot") + theme_pubr(legend = "right") + geom_vline (xintercept = 200, linetype = "dotdash")+ ylab("")
+
+p16 = ggplot() +geom_boxplot(data = se[[]], aes(y = fct_rev(factor(slide1)),nCount_RNA, colour = factor(slide1)),  fill = "red", alpha = 0.1, 
+                                   bins = 50) + ggtitle("Total counts per spots") + theme_pubr(legend = "right") + geom_vline (xintercept = 100, linetype = "dotdash")+ ylab("")
+
+p17 = ggplot() + geom_boxplot(data = se[[]], aes(y = fct_rev(factor(slide1)),percent.mito, colour = factor(slide1)), alpha = 0.1, 
+                                    bins = 50) + ggtitle("Mitochondrial genes" ) + theme_pubr(legend = "right") + geom_vline (xintercept = 30, linetype = "dotdash")+ ylab("")
+
+p18 = ggplot() + geom_boxplot(data = se[[]], aes(y = fct_rev(factor(slide1)),percent.ribo, colour = factor(slide1)), alpha = 0.1, 
+                                    bins = 50) + ggtitle("Ribosomal genes" ) + theme_pubr(legend = "right") + geom_vline (xintercept = 30, linetype = "dotdash")+ ylab("")
+
+jpeg("figures/filter3.jpg", width = 900, height = 1200)
+(p15+p11+p16+p12)/(p17+p13+p18+p14)
+dev.off()
+
+jpeg("figures/clusterslides1.jpg", width = 900, height = 1200)
+ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1, ncol = 3, value.scale = "all",dark.theme = F) + theme_nothing()
+dev.off()
+```
+
+Few simple descriptive stats and figures
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# After clustering
+clust_feat <- clustspots(se)
+clust_feat
+
+# png("figures3/clust_feat.png", height = 600, width = 400)
+# grid.table(clust_feat)
+# dev.off()
+
+# Plot the distribution
+plotpie <- ggplot(clust_feat, aes(x="", y=clust_feat$all, fill=clust_feat$clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + 
+  coord_polar("y", start=0) + theme_pubclean() + labs(fill="Clusters")+
+  theme(legend.position = "none", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+plotpie17 <- ggplot(clust_feat, aes(x="", y=D17, fill=clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + 
+  coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+  theme(legend.position = "none", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+plotpie19 <- ggplot(clust_feat, aes(x="", y=D19, fill=clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + 
+  coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+  theme(legend.position = "none", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+plotpie54 <- ggplot(clust_feat, aes(x="", y=D54, fill=clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + 
+  coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+  theme(legend.position = "bottom", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+plotpie12 <- ggplot(clust_feat, aes(x="", y=D12, fill=clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + 
+  coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+  theme(legend.position = "bottom", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+plotpie20 <- ggplot(clust_feat, aes(x="", y=D20, fill=clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + 
+  coord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+  theme(legend.position = "bottom", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+plotpie53 <- ggplot(clust_feat, aes(x="", y=D53, fill=clusters)) +
+  geom_bar(stat="identity", width=1, colour = "white") + c
+oord_polar("y", start=0) + theme_pubclean()+ labs(fill="Clusters")+
+  theme(legend.position = "bottom", axis.text = element_blank(), 
+        axis.title.x=element_blank(), axis.title.y=element_blank())
+
+
+# jpeg("figures3/clusterpies.jpg", width = 900, height = 600)
+# ggarrange(plotpie17, plotpie19, plotpie54, 
+#           common.legend = TRUE, legend = "right",  ncol = 3, nrow = 2, 
+#           labels = c("D17", "D19", "D54")) #"D12", "D20", "D53" ; plotpie12, plotpie20, plotpie53,
+# dev.off()
+# 
+# jpeg("figures3/clusterslides1.jpg", width = 900, height = 600)
+# ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1.5, ncol = 3, value.scale = "all",dark.theme = F) + theme_nothing()
+# dev.off()
+```
+
+Visualise clusters on histo data the data for overview
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 1, 
+               ncol = 3, legend.align = "bottom", value.scale = "all", 
+               dark.theme = F, label=TRUE) + theme_cleantable()
+
+s1 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 1, 
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s2 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 2, 
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s3 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 3, 
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s4 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 4,
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s5 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 5,
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+s6 <- ST.FeaturePlot(object = se, features = "seurat_clusters", pt.size = 2, indices = 6,
+               split.labels = T, show.sb = FALSE, ncol = 10)
+
+ggarrange(s1, s2, s3, s4, s5, s6, nrow = 6, ncol = 1, legend = "right", common.legend = TRUE)
+DimPlot(se, reduction = "umap", split.by = "slide", ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+DimPlot(se, reduction = "umap", split.by = "treatment",ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+DimPlot(se, reduction = "tsne", label = TRUE) + theme_pubr(legend = "right")
+DimPlot(se, reduction = "umap", label = TRUE) +theme_pubr(legend = "right")
+
+```
+
+### Differential gene expression
+Compare cluster vs rest of tissue
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# All DGE of cluster vs rest of tissue
+clustvslist <- clustvsrest(se) # 5% spots (given tolDCs > 5% avg)
+#   returns list(se.markers, se.markers.up, se.markers.down, plotup1, plotup2, clust.restup, clust.restdown)
+
+clustvsrestup.rds <- clustvslist[[6]]
+clustvsrestdown.rds <- clustvslist[[7]]
+se.markers.up <- clustvslist[[2]]
+se.markers.down <- clustvslist[[3]]
+se.markers.all <- clustvslist[[1]]
+
+saveRDS(clustvslist,"rds/clustvsrest.rds")
+saveRDS(se.markers.all, "rds/sefindallmarkers.rds")
+saveRDS(se.markers.up,  "rds/se.markers.up.rds")
+saveRDS(se.markers.down, "rds/se.markers.down.rds")
+
+# se.markers.all = readRDS("rds/sefindallmarkers.rds") 
+# se.markers.up = readRDS("rds/se.markers.up.rds")
+# se.markers.down = readRDS("rdsrelaxed/se.markers.down.rds")
+
+ftx<-head(se@assays$SCT@var.features, 20)
+heatmap.colors <- c("lightgray", "mistyrose", "red", "darkred", "black")
+p.fts <- lapply(ftx, function(ftr) {
+  FeaturePlot(se, features = ftr, reduction = "umap", order = TRUE, cols = heatmap.colors)
+})
+
+ST.FeaturePlot(se, features = ftx, ncol = 6, grid.ncol = 1, 
+               cols = heatmap.colors, pt.size = 1, show.sb = FALSE)
+
+FeatureOverlay(se, features = "Itgax", 
+              sampleids = 1:6,
+              cols = c("lightgray", "mistyrose", "red", "darkred", "black"),
+              pt.size = 1.5, 
+              pt.alpha = 0.5,
+              ncol = 3)
+
+FeaturePlot(se, features = "Itgax", reduction = "umap", 
+            order = TRUE, cols = heatmap.colors, split.by = "treatment", ncol = 3)
+FeaturePlot(se, features = "Itgax", reduction = "umap", 
+            order = TRUE, cols = heatmap.colors, split.by = "slide", ncol = 3)
+DimPlot(se, reduction = "umap", split.by = "treatment",
+        ncol = 3, label = TRUE) +theme_pubr(legend = "right")
+
+check1<-se@meta.data[which(se@meta.data$treatment == "LPSTol"),]
+check1 <- check1$slide
+levels(as.factor(check1))
+gc()
+```
+
+Cluster vs each other individually # res 1.2 with 0-9 clusters
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+gc()
+se.temp <- c()
+se.temp <- se
+t3 <- c()
+t3 <- length(levels(se@meta.data$seurat_clusters))
+
+for (j in 1:(t3-1)){
+  # Generate comparison data sets
+  k = (j-1)
+  se.markers.pw <- c()
+  se.stats<-c()
+  comp <- c()
+  check <- c()
+  
+  for (i in (k+1):(t3-1)){
+    se.markers.pw[[i]] <- FindMarkers(se.temp, ident.1 = k, ident.2 = i, 
+                                        min.pct = 0.1, logfc.threshold = 0.5, 
+                                        only.pos = FALSE, random.seed = 42, verbose = FALSE)
+     
+    comp <- paste0("c", k, " vs c:", i, sep = "")
+    se.markers.pw[[i]] <- cbind(comp, se.markers.pw[[i]])
+    check<-se.markers.pw[[i]]$avg_log2FC
+    se.stats[[i]] <- c(length(which(check>0)), length(which(check<0)))
+    }
+  
+    #Store these objects
+    if (k == 0){
+      se.stats<-as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("O vs 1", "O vs 2", "O vs 3",  "O vs 4",  "O vs 5", 
+                              "O vs 6" , "O vs 7", "O vs 8","O vs 9")
+
+      setClass("cluster0",
+               slots = c(comp0vs1 = "data.frame", comp0vs2 = "data.frame",
+                        comp0vs3 = "data.frame", comp0vs4 = "data.frame",
+                        comp0vs5 = "data.frame", comp0vs6 = "data.frame",
+                        comp0vs7 = "data.frame", comp0vs8 = "data.frame", 
+                        comp0vs9 = "data.frame", compstat = "data.frame"),
+               
+               prototype = list(comp0vs1 = data.frame(), comp0vs2 = data.frame(),
+                                comp0vs3 = data.frame(), comp0vs4 = data.frame(),
+                                comp0vs5 = data.frame(), comp0vs6 = data.frame(),
+                                comp0vs7 = data.frame(), comp0vs8 = data.frame(),
+                                comp0vs9 = data.frame(), compstat = data.frame()))
+
+      clust.0vs <- new("cluster0",comp0vs1 = se.markers.pw[[1]], comp0vs2 = se.markers.pw[[2]],
+                       comp0vs3 = se.markers.pw[[3]], comp0vs4 = se.markers.pw[[4]],
+                       comp0vs5 = se.markers.pw[[5]], comp0vs6 = se.markers.pw[[6]],
+                       comp0vs7 = se.markers.pw[[7]], comp0vs8 = se.markers.pw[[8]],
+                       comp0vs9 = se.markers.pw[[9]], compstat = se.stats) 
+      
+      saveRDS(clust.0vs, "rds/clust0vs.rds")
+
+    } else if (k == 1) {
+      se.stats <- se.stats[2:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("1 vs 2", "1 vs 3", "1 vs 4",  "1 vs 5",  
+                              "1 vs 6",  "1 vs 7", "1 vs 8", "1 vs 9")
+
+      setClass("cluster1",
+               slots = c(comp1vs2 = "data.frame", comp1vs3 = "data.frame",
+                         comp1vs4 = "data.frame", comp1vs5 = "data.frame",
+                         comp1vs6 = "data.frame", comp1vs7 = "data.frame",
+                         comp1vs8 = "data.frame", comp1vs9 = "data.frame",
+                         compstat = "data.frame"),
+               
+               prototype = list(comp1vs2 = data.frame(), comp1vs3 = data.frame(),
+                                comp1vs4 = data.frame(), comp1vs5 = data.frame(),
+                                comp1vs6 = data.frame(), comp1vs7 = data.frame(),
+                                comp1vs8 = data.frame(), comp1vs9 = data.frame(),
+                                compstat = data.frame()))
+
+      clust.1vs <- new("cluster1", comp1vs2 = se.markers.pw[[2]],
+                   comp1vs3 = se.markers.pw[[3]], comp1vs4 = se.markers.pw[[4]],
+                   comp1vs5 = se.markers.pw[[5]], comp1vs6 = se.markers.pw[[6]],
+                   comp1vs7 = se.markers.pw[[7]], comp1vs8 = se.markers.pw[[8]],  
+                   comp1vs9 = se.markers.pw[[9]],compstat = se.stats)
+
+      saveRDS(clust.1vs, "rds/clust1vs.rds")
+
+    } else if (k == 2) {
+      se.stats <- se.stats[3:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("2 vs 3", "2 vs 4", "2 vs 5", "2 vs 6", "2 vs 7", "2 vs 8", 
+                              "2 vs 9" )
+
+      setClass("cluster2",
+               slots = c(comp2vs3 = "data.frame", comp2vs4 = "data.frame",
+                         comp2vs5 = "data.frame", comp2vs6 = "data.frame", 
+                         comp2vs7 = "data.frame", comp2vs8 = "data.frame",
+                         comp2vs9 = "data.frame", compstat = "data.frame"),
+               
+      prototype = list(comp2vs3 = data.frame(), comp2vs4 = data.frame(),
+                       comp2vs5 = data.frame(), comp2vs6 = data.frame(),
+                       comp2vs7 = data.frame(), comp2vs8 = data.frame(),
+                       comp2vs9 = data.frame(), compstat = data.frame()))
+
+      clust.2vs <- new("cluster2", comp2vs3 = se.markers.pw[[3]],
+                   comp2vs4 = se.markers.pw[[4]], comp2vs5 = se.markers.pw[[5]],
+                   comp2vs6 = se.markers.pw[[6]], comp2vs7 = se.markers.pw[[7]], 
+                   comp2vs8 = se.markers.pw[[8]], comp2vs9 = se.markers.pw[[9]],
+                   compstat = se.stats)
+
+      saveRDS(clust.2vs, "rds/clust2vs.rds")
+
+    } else if (k ==3) {
+      se.stats <- se.stats[4:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("3 vs 4", "3 vs 5", "3 vs 6", "3 vs 7", "3 vs 8", "3 vs 9")
+
+      setClass("cluster3",
+               slots = c(comp3vs4 = "data.frame", comp3vs5 = "data.frame",
+                         comp3vs6 = "data.frame", comp3vs7 = "data.frame",
+                         comp3vs8 = "data.frame", compstat = "data.frame"),
+               
+               prototype = list(comp3vs4 = data.frame(), comp3vs5 = data.frame(),
+                                comp3vs6 = data.frame(), comp3vs7 = data.frame(),
+                                comp3vs8 = data.frame(), comp3vs9 = data.frame(),
+                                compstat = data.frame()))
+
+      clust.3vs <- new("cluster3", comp3vs4 = se.markers.pw[[4]],
+                   comp3vs5 = se.markers.pw[[5]], comp3vs6 = se.markers.pw[[6]],
+                   comp3vs7 = se.markers.pw[[7]], comp3vs8 = se.markers.pw[[8]],
+                   comp3vs9 = se.markers.pw[[9]], compstat = se.stats)
+
+      saveRDS(clust.3vs, "rds/clust3vs.rds")
+
+    }  else if (k ==4) {
+      se.stats <- se.stats[5:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("4 vs 5", "4 vs 6", "4 vs 7", "4 vs 8", "4 vs 9")
+
+      setClass("cluster4",
+               slots = c(comp4vs5 = "data.frame", comp4vs6 = "data.frame",
+                         comp4vs7 = "data.frame", comp4vs8 = "data.frame",
+                         comp4vs9 = "data.frame", compstat = "data.frame"),
+               
+               prototype = list(comp4vs5 = data.frame(),comp4vs6 = data.frame(),
+                                comp4vs7 = data.frame(),comp4vs8 = data.frame(),
+                                comp4vs9 = data.frame(), compstat = data.frame()))
+
+      clust.4vs <- new("cluster4", comp4vs5 = se.markers.pw[[5]],comp4vs6 = se.markers.pw[[6]],
+                       comp4vs7 = se.markers.pw[[7]], comp4vs8 = se.markers.pw[[8]],
+                       comp4vs9 = se.markers.pw[[9]],  compstat = se.stats)
+
+      saveRDS(clust.4vs, "rds/clust4vs.rds")
+
+    } else if(k ==5) {
+      se.stats <- se.stats[6:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("5 vs 6", "5 vs 7", "5 vs 8", "5 vs 9")
+      
+      setClass("cluster5",  
+               slots = c(comp5vs6 = "data.frame", comp5vs7 = "data.frame",
+                         comp5vs8 = "data.frame", comp5vs9 = "data.frame",
+                        compstat = "data.frame"), 
+               prototype = list(comp5vs6 = data.frame(), comp5vs7 = data.frame(),
+                                comp5vs8 = data.frame(), comp5vs9 = data.frame(),
+                                compstat = data.frame())) 
+      
+      clust.5vs <- new("cluster5", comp5vs6 = se.markers.pw[[6]],
+                       comp5vs7 = se.markers.pw[[7]], comp5vs8 = se.markers.pw[[8]], 
+                       comp5vs9 = se.markers.pw[[9]],  compstat = se.stats)
+      
+      saveRDS(clust.5vs, "rds/clust5vs.rds")
+      
+    }  else if (k ==6) {
+      se.stats <- se.stats[7:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("6 vs 7", "6 vs 8", "6 vs 9")
+      
+      setClass("cluster6",  
+               slots = c(comp6vs7 = "data.frame", comp6vs8 = "data.frame", 
+                         comp6vs9 = "data.frame",  compstat = "data.frame"), 
+               
+               prototype = list(comp6vs7 = data.frame(), comp6vs8 = data.frame(),
+                                comp6vs9 = data.frame(),  compstat = data.frame())) 
+      
+      clust.6vs <- new("cluster6", comp6vs7 = se.markers.pw[[7]],
+                       comp6vs8 = se.markers.pw[[8]], 
+                       comp6vs9 = se.markers.pw[[9]], compstat = se.stats)
+      
+      saveRDS(clust.6vs, "rds/clust6vs.rds")
+      
+    }  else if (k ==7) {
+      se.stats <- se.stats[8:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c( "7 vs 8", "7 vs 9")
+      
+      setClass("cluster7",  
+               slots = c(comp7vs8 = "data.frame", comp7vs9 = "data.frame", 
+                         compstat = "data.frame"), 
+               
+               prototype = list(comp7vs8 = data.frame(),comp7vs9 = data.frame(), 
+                                compstat = data.frame())) 
+      
+      clust.7vs <- new("cluster7",comp7vs8 = se.markers.pw[[8]],
+                       comp7vs9 = se.markers.pw[[9]], 
+                       compstat = se.stats)
+      
+      saveRDS(clust.7vs, "rds/clust7vs.rds")
+      
+    } else if (k ==8) {
+      se.stats <- se.stats[9:(t3-1)]
+      se.stats <- as.data.frame(se.stats)
+      rownames(se.stats) <- c("Up", "Down")
+      colnames(se.stats) <- c("8 vs 9")
+      
+      setClass("cluster8",  
+               slots = c(comp8vs9 = "data.frame", compstat = "data.frame"), 
+               
+               prototype = list(comp8vs9 = data.frame(), 
+                                compstat = data.frame())) 
+      
+      clust.8vs <- new("cluster8", 
+                       comp8vs9 = se.markers.pw[[9]],
+                       compstat = se.stats)
+      
+      saveRDS(clust.8vs, "rds/clust8vs.rds")
+    } else { print("complete")}
+  }
+```
+
+Pairwise DGE descriptive stats
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+se.individuals <- c()
+se.individuals <- cbind(clust.1vs@compstat,
+                        clust.2vs@compstat, clust.3vs@compstat,
+                        clust.4vs@compstat, clust.5vs@compstat, 
+                        clust.6vs@compstat, clust.7vs@compstat, 
+                        clust.8vs@compstat, clust.9vs@compstat, 
+                        clust.10vs@compstat, clust.11vs@compstat, 
+                        clust.12vs@compstat, clust.13vs@compstat, 
+                        clust.14vs@compstat, clust.15vs@compstat, 
+                        clust.16vs@compstat, clust.17vs@compstat)
+se.individuals <- t(se.individuals)
+se.individuals = data.frame(se.individuals)
+
+write.xlsx(se.individuals, file= paste0("csv3/clust_pw_counts.xlsx"))
+
+```
+
+
+Save results into CSV folder
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = FALSE}
+# versus rest of tissue
+write.xlsx(clustall(se.clust.vs.rest, 0), file="csv/clustersvsrest.xlsx", sheetName="c0 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 1), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c1 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 2), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c2 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 3), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c3 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 4), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c4 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 5), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c5 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 6), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c6 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 7), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c7 vs rest")
+write.xlsx(clustall(se.clust.vs.rest, 8), file="csv/clustersvsrest.xlsx", append=TRUE,sheetName="c8 vs rest")
+write.xlsx(se.rest.nomito, file="csv/clustersvsrest.xlsx", append=TRUE, sheetName="removed mito genes")
+
+write.xlsx(slot(se.clust.vs.0, "comp0vs1"), file="csv/clust0.xlsx", sheetName="c0 v 1")
+write.xlsx(slot(se.clust.vs.0, "comp0vs2"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 2")
+write.xlsx(slot(se.clust.vs.0, "comp0vs3"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 3")
+write.xlsx(slot(se.clust.vs.0, "comp0vs4"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 4")
+write.xlsx(slot(se.clust.vs.0, "comp0vs5"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 5")
+write.xlsx(slot(se.clust.vs.0, "comp0vs6"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 6")
+write.xlsx(slot(se.clust.vs.0, "comp0vs7"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 7")
+write.xlsx(slot(se.clust.vs.0, "comp0vs8"), file="csv/clust0.xlsx", append=TRUE, sheetName="c0 v 8")
+
+
+write.xlsx(slot(se.clust.vs.1, "comp1vs2"), file="csv/clust1.xlsx", sheetName="c1 v 2")
+write.xlsx(slot(se.clust.vs.1, "comp1vs3"), file="csv/clust1.xlsx", append=TRUE, sheetName="c1 v 3")
+write.xlsx(slot(se.clust.vs.1, "comp1vs4"), file="csv/clust1.xlsx", append=TRUE, sheetName="c1 v 4")
+write.xlsx(slot(se.clust.vs.1, "comp1vs5"), file="csv/clust1.xlsx", append=TRUE, sheetName="c1 v 5")
+write.xlsx(slot(se.clust.vs.1, "comp1vs6"), file="csv/clust1.xlsx", append=TRUE, sheetName="c1 v 6")
+write.xlsx(slot(se.clust.vs.1, "comp1vs7"), file="csv/clust1.xlsx", append=TRUE, sheetName="c1 v 7")
+write.xlsx(slot(se.clust.vs.1, "comp1vs8"), file="csv/clust1.xlsx", append=TRUE, sheetName="c1 v 8")
+
+write.xlsx(slot(se.clust.vs.2, "comp2vs3"), file="csv/clust2.xlsx", sheetName="c2 v 3")
+write.xlsx(slot(se.clust.vs.2, "comp2vs4"), file="csv/clust2.xlsx", append=TRUE, sheetName="c2 v 4")
+write.xlsx(slot(se.clust.vs.2, "comp2vs5"), file="csv/clust2.xlsx", append=TRUE, sheetName="c2 v 5")
+write.xlsx(slot(se.clust.vs.2, "comp2vs6"), file="csv/clust2.xlsx", append=TRUE, sheetName="c2 v 6")
+write.xlsx(slot(se.clust.vs.2, "comp2vs7"), file="csv/clust2.xlsx", append=TRUE, sheetName="c2 v 7")
+write.xlsx(slot(se.clust.vs.2, "comp2vs8"), file="csv/clust2.xlsx", append=TRUE, sheetName="c2 v 8")
+
+write.xlsx(slot(se.clust.vs.3, "comp3vs4"), file="csv/clust3.xlsx", sheetName="c3 v 4")
+write.xlsx(slot(se.clust.vs.3, "comp3vs5"), file="csv/clust3.xlsx", append=TRUE, sheetName="c3 v 5")
+write.xlsx(slot(se.clust.vs.3, "comp3vs6"), file="csv/clust3.xlsx", append=TRUE, sheetName="c3 v 6")
+write.xlsx(slot(se.clust.vs.3, "comp3vs7"), file="csv/clust3.xlsx", append=TRUE, sheetName="c3 v 7")
+write.xlsx(slot(se.clust.vs.3, "comp3vs8"), file="csv/clust3.xlsx", append=TRUE, sheetName="c3 v 8")
+
+write.xlsx(slot(se.clust.vs.4, "comp4vs5"), file="csv/clust4.xlsx", sheetName="c4 v 5")
+write.xlsx(slot(se.clust.vs.4, "comp4vs6"), file="csv/clust4.xlsx", append=TRUE, sheetName="c4 v 6")
+write.xlsx(slot(se.clust.vs.4, "comp4vs7"), file="csv/clust4.xlsx", append=TRUE, sheetName="c4 v 7")
+write.xlsx(slot(se.clust.vs.4, "comp4vs8"), file="csv/clust4.xlsx", append=TRUE, sheetName="c4 v 8")
+
+write.xlsx(slot(se.clust.vs.5, "comp5vs6"), file="csv/clust5.xlsx", sheetName="c5 v 6")
+write.xlsx(slot(se.clust.vs.5, "comp5vs7"), file="csv/clust5.xlsx", append=TRUE, sheetName="c5 v 7")
+write.xlsx(slot(se.clust.vs.5, "comp5vs8"), file="csv/clust5.xlsx", append=TRUE, sheetName="c5 v 8")
+
+write.xlsx(slot(se.clust.vs.6, "comp6vs7"), file="csv/clust6.xlsx", sheetName="c6 v 7")
+write.xlsx(slot(se.clust.vs.6, "comp6vs8"), file="csv/clust6.xlsx", append=TRUE, sheetName="c6 v 8")
+
+write.xlsx(slot(se.clust.vs.7, "comp7vs8"), file="csv/clust7.xlsx", sheetName="c7 v 8")
+```
+
+
+```{r, warning = FALSE, message = FALSE, echo = TRUE, cache = FALSE, eval = TRUE}
+sessionInfo()
+```
+
