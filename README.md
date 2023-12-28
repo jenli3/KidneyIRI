@@ -1,9 +1,10 @@
-# KidneyIRI
+![image](https://github.com/jenli3/KidneyIRI/assets/70942326/00832120-78f8-4520-ae54-733730e26af4)# KidneyIRI
 Private scripts for manuscript submission
 - Excel S1 - supplementary files of tolDC results
 - Excel S2 - supplementary files of spatial kidney results
 - spatial folder - scripts for analysis of 10x visium results
-- toldc folder - scripts for analyssis of bulk RNA-seq of enriched dc
+- toldc folder - scripts for analyssis of bulk RNA-seq of enriched dc (GSE205322 (mouse tolerogenic dendritic cell RNAseq))
+
 
 (c)Jennifer Li
 PhD Candidate, CTRR
