@@ -2,7 +2,7 @@
 Private scripts for manuscript submission
 - Excel S1 - supplementary files of tolDC results
 - Excel S2 - supplementary files of spatial kidney results
-- spatial folder - scripts for analysis of 10x visium results
+- spatial folder - scripts for analysis of 10x visium results available on ArrayExpress (E-MTAB-14618)
 - toldc folder - scripts for analyssis of bulk RNA-seq of enriched dc (GSE205322 (mouse tolerogenic dendritic cell RNAseq))
 
 
